@@ -1,0 +1,4 @@
+#!/usr/bin/bash
+# kernel-install plugin for atomic-rollback.
+# Thin dispatcher. All logic lives in the Rust binary, inside the proof boundary.
+exec atomic-rollback kernel-hook "$@"

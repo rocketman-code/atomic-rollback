@@ -2,5 +2,18 @@
 name = "atomic-rollback"
 version = "0.1.0"
 edition = "2024"
+description = "Atomic system rollback for Fedora via Btrfs RENAME_EXCHANGE subvolume swap"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rocketman-code/atomic-rollback"
+keywords = ["btrfs", "rollback", "fedora", "snapshot", "atomic"]
+categories = ["command-line-utilities", "filesystem"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(verus_only)', 'cfg(verus_keep_ghost)'] }
 
 [dependencies]
+libc = "0.2"
+vstd = "=0.0.0-2026-03-29-0113"
+
+[package.metadata.verus]
+verify = true
