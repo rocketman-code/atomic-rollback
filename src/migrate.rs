@@ -299,6 +299,32 @@ fn step9_update_esp() -> Result<(), String> {
 
     fs::write(&esp_cfg_new, &new_cfg)
         .map_err(|e| format!("write {esp_cfg_new}: {e}"))?;
+
+    // Verify the three ESP properties the model requires before swap.
+    // BOOTS needs: esp_target_uuid correct, esp_has_btrfs_relative, esp_prefix_has_boot.
+    if !new_cfg.contains(&new_uuid) {
+        let _ = fs::remove_file(&esp_cfg_new);
+        return Err(format!(
+            "ESP grub.cfg.new does not contain the target UUID {new_uuid}. \
+             Substitution failed. Old ESP preserved."));
+    }
+    if !new_cfg.lines().any(|l| l.contains("btrfs_relative_path") && l.contains("yes")) {
+        let _ = fs::remove_file(&esp_cfg_new);
+        return Err(
+            "ESP grub.cfg.new missing btrfs_relative_path. \
+             GRUB will not resolve paths from the default subvolume. \
+             Old ESP preserved.".into());
+    }
+    if !new_cfg.lines().any(|l|
+        (l.contains("prefix=") || l.contains("configfile")) && l.contains(&full_grub))
+    {
+        let _ = fs::remove_file(&esp_cfg_new);
+        return Err(format!(
+            "ESP grub.cfg.new missing {full_grub} in prefix or configfile path. \
+             GRUB will not find the main configuration. \
+             Old ESP preserved."));
+    }
+
     swap::atomic_swap(Path::new(P.esp_dir), "grub.cfg", "grub.cfg.new")?;
 
     Ok(())
