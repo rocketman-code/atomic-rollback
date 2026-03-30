@@ -7,6 +7,16 @@ use vstd::prelude::*;
 
 verus! {
 
+// ASCII byte values for the parser. Verus does not support byte literal
+// syntax (b',') -- lit_to_vir handles LitKind::Int but not LitKind::Byte.
+pub const COMMA: u8 = 44u8;
+pub const EQUALS: u8 = 61u8;
+pub const SPACE: u8 = 32u8;
+pub const TAB: u8 = 9u8;
+pub const NEWLINE: u8 = 10u8;
+pub const HASH: u8 = 35u8;
+pub const CR: u8 = 13u8;
+
 // --- Spec functions ---
 
 pub open spec fn bytes_match_at(haystack: Seq<u8>, needle: Seq<u8>, pos: int) -> bool {
@@ -16,7 +26,7 @@ pub open spec fn bytes_match_at(haystack: Seq<u8>, needle: Seq<u8>, pos: int) ->
 }
 
 pub open spec fn is_option_start(options: Seq<u8>, p: int) -> bool {
-    p == 0 || (p > 0 && options[p - 1] == 44)
+    p == 0 || (p > 0 && options[p - 1] == COMMA)
 }
 
 // --- match_at ---
@@ -60,9 +70,9 @@ fn find_option(options: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
                     0 <= p && p + key@.len() + 1 == s
                     && is_option_start(options@, p)
                     && bytes_match_at(options@, key@, p)
-                    && options@[p + key@.len()] == 61
-                && forall|j: int| s <= j < e ==> options@[j] != 44
-                && (e == options@.len() || options@[e as int] == 44)
+                    && options@[p + key@.len()] == EQUALS
+                && forall|j: int| s <= j < e ==> options@[j] != COMMA
+                && (e == options@.len() || options@[e as int] == COMMA)
             },
             None => true,
         },
@@ -87,11 +97,11 @@ fn find_option(options: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
             invariant
                 i <= option_end,
                 option_end <= options@.len(),
-                forall|j: int| i as int <= j < option_end as int ==> options@[j] != 44u8,
-                found_comma ==> (option_end < options@.len() && options@[option_end as int] == 44u8),
+                forall|j: int| i as int <= j < option_end as int ==> options@[j] != COMMA,
+                found_comma ==> (option_end < options@.len() && options@[option_end as int] == COMMA),
             decreases options@.len() - option_end + if found_comma { 0int } else { 1int },
         {
-            if options[option_end] == 44u8 {
+            if options[option_end] == COMMA {
                 found_comma = true;
             } else {
                 option_end = option_end + 1;
@@ -101,7 +111,7 @@ fn find_option(options: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
         if match_at(options, key, option_start) {
             let after_key = option_start + key.len();
             if after_key < options.len() {
-                if options[after_key] == 61u8 {
+                if options[after_key] == EQUALS {
                     let val_start = after_key + 1;
                     if val_start <= option_end {
                         assert(is_option_start(options@, option_start as int));
@@ -134,7 +144,7 @@ fn find_root_uuid(options: &[u8], prefix: &[u8]) -> (result: Option<(usize, usiz
                 s <= e && e <= options@.len()
                 && s >= prefix@.len()
                 && bytes_match_at(options@, prefix@, (s - prefix@.len()) as int)
-                && forall|j: int| s <= j < e ==> options@[j] != 32 && options@[j] != 9
+                && forall|j: int| s <= j < e ==> options@[j] != SPACE && options@[j] != TAB
             },
             None => true,
         },
@@ -149,11 +159,11 @@ fn find_root_uuid(options: &[u8], prefix: &[u8]) -> (result: Option<(usize, usiz
     {
         let token_start = i;
         let mut token_end = i;
-        while token_end < options.len() && options[token_end] != 32u8 && options[token_end] != 9u8
+        while token_end < options.len() && options[token_end] != SPACE && options[token_end] != TAB
             invariant
                 i <= token_end,
                 token_end <= options@.len(),
-                forall|j: int| i <= j < token_end ==> options@[j] != 32 && options@[j] != 9,
+                forall|j: int| i <= j < token_end ==> options@[j] != SPACE && options@[j] != TAB,
             decreases options@.len() - token_end,
         {
             token_end = token_end + 1;
@@ -168,7 +178,7 @@ fn find_root_uuid(options: &[u8], prefix: &[u8]) -> (result: Option<(usize, usiz
         }
 
         i = token_end;
-        while i < options.len() && (options[i] == 32u8 || options[i] == 9u8)
+        while i < options.len() && (options[i] == SPACE || options[i] == TAB)
             invariant
                 token_end <= i,
                 i <= options@.len(),
@@ -212,7 +222,7 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
     {
         let line_start = i;
 
-        while i < content.len() && (content[i] == 32u8 || content[i] == 9u8)
+        while i < content.len() && (content[i] == SPACE || content[i] == TAB)
             invariant
                 line_start <= i,
                 i <= content@.len(),
@@ -228,7 +238,7 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
         let content_start = i;
 
         let mut line_end = i;
-        while line_end < content.len() && content[line_end] != 10u8
+        while line_end < content.len() && content[line_end] != NEWLINE
             invariant
                 i <= line_end,
                 line_end <= content@.len(),
@@ -237,13 +247,13 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
             line_end = line_end + 1;
         }
 
-        if content[content_start] != 35u8 {
+        if content[content_start] != HASH {
             if match_at(content, key, content_start) {
                 let after_key = content_start + key.len();
                 if after_key < content.len() {
-                    if content[after_key] == 32u8 || content[after_key] == 9u8 {
+                    if content[after_key] == SPACE || content[after_key] == TAB {
                         let mut val_start = after_key + 1;
-                        while val_start < line_end && (content[val_start] == 32u8 || content[val_start] == 9u8)
+                        while val_start < line_end && (content[val_start] == SPACE || content[val_start] == TAB)
                             invariant
                                 after_key + 1 <= val_start,
                                 val_start <= content@.len(),
@@ -253,7 +263,7 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
                             val_start = val_start + 1;
                         }
                         let mut val_end = if val_start <= line_end { line_end } else { val_start };
-                        while val_end > val_start && (content[val_end - 1] == 32u8 || content[val_end - 1] == 9u8 || content[val_end - 1] == 13u8)
+                        while val_end > val_start && (content[val_end - 1] == SPACE || content[val_end - 1] == TAB || content[val_end - 1] == CR)
                             invariant
                                 val_start <= val_end,
                                 val_end <= content@.len(),

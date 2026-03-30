@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use crate::{check, parse, swap, tools};
+use crate::consts::BTRFS_TOPLEVEL_SUBVOLID;
+use crate::{check, swap, tools};
 
 /// Roll back to a named snapshot.
 /// 1. Mount top-level subvolume
@@ -9,33 +10,15 @@ use crate::{check, parse, swap, tools};
 /// 4. Update default subvolume to match new root
 ///
 /// Verification BEFORE the irreversible swap. By construction, not by discipline.
+/// Cannot use with_toplevel because undo-on-failure needs direct control.
 pub fn rollback(snapshot_name: &str) -> Result<(), String> {
     let toplevel = "/mnt/atomic-rollback-toplevel";
+    let (device, fstab) = tools::root_device()?;
+    let root_subvol = tools::root_subvol_name(&fstab)?;
+
     std::fs::create_dir_all(toplevel)
         .map_err(|e| format!("mkdir {toplevel}: {e}"))?;
-
-    // Find root device from fstab. Handles UUID=, LABEL=, and /dev/ paths.
-    let fstab = std::fs::read_to_string("/etc/fstab")
-        .map_err(|e| format!("read fstab: {e}"))?;
-    let root_device = fstab.lines()
-        .filter(|l| !l.trim().starts_with('#'))
-        .find(|l| l.split_whitespace().nth(1).is_some_and(|mp| mp == "/"))
-        .and_then(|l| l.split_whitespace().next())
-        .ok_or("cannot find root entry in fstab")?
-        .to_string();
-
-    let root_subvol = fstab.lines()
-        .filter(|l| !l.trim().starts_with('#'))
-        .find(|l| l.split_whitespace().nth(1).is_some_and(|mp| mp == "/"))
-        .and_then(|l| l.split_whitespace().nth(3))
-        .and_then(|opts| parse::extract_mount_option(opts, "subvol"))
-        .ok_or("cannot determine root subvolume name from fstab (missing subvol= option)")?
-        .to_string();
-
-    let device = tools::resolve_fstab_device(&root_device)?;
-
-    // Mount top-level (subvolid=5)
-    tools::mount_subvolid(&device, toplevel, 5)?;
+    tools::mount_subvolid(&device, toplevel, BTRFS_TOPLEVEL_SUBVOLID)?;
 
     // Verify snapshot exists
     let snapshot_path = format!("{toplevel}/{snapshot_name}");

@@ -3,6 +3,8 @@ use std::path::Path;
 use std::process::Command;
 use std::fs;
 
+use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, FSTAB_MOUNT_POINT, FSTAB_OPTIONS};
+
 /// Flush all pending filesystem changes to disk.
 /// Btrfs operations (RENAME_EXCHANGE, set-default) use btrfs_end_transaction,
 /// which commits to the in-memory journal but NOT to disk. Changes are lost
@@ -89,6 +91,8 @@ pub fn is_mountpoint(path: &Path) -> bool {
 }
 
 // --- btrfs ---
+// Output parsed against format: "ID %llu gen %llu top level %llu path %s\n"
+// (cmds/subvolume-list.c:822). JSON output exists but is behind #if EXPERIMENTAL.
 
 pub fn btrfs_subvol_list(mount_point: &str) -> Result<String, String> {
     run_stdout("btrfs", &["subvolume", "list", mount_point])
@@ -152,6 +156,53 @@ pub fn grub2_mkconfig(output: &str) -> Result<(), String> {
 
 pub fn rsync(src: &str, dst: &str) -> Result<(), String> {
     run_ok("rsync", &["-a", src, dst])
+}
+
+// --- fstab helpers ---
+
+/// Read /etc/fstab and return the root device path (resolved from UUID=/LABEL=/dev path).
+pub fn root_device() -> Result<(String, String), String> {
+    let fstab = fs::read_to_string("/etc/fstab")
+        .map_err(|e| format!("Cannot read /etc/fstab: {e}"))?;
+    let root_device = fstab.lines()
+        .filter(|l| !l.trim().starts_with('#'))
+        .find(|l| l.split_whitespace().nth(FSTAB_MOUNT_POINT).is_some_and(|mp| mp == "/"))
+        .and_then(|l| l.split_whitespace().next())
+        .ok_or("Cannot find root entry in /etc/fstab")?
+        .to_string();
+    let device = resolve_fstab_device(&root_device)?;
+    Ok((device, fstab))
+}
+
+/// Extract the root subvolume name from fstab (the subvol= value for /).
+pub fn root_subvol_name(fstab: &str) -> Result<String, String> {
+    fstab.lines()
+        .filter(|l| !l.trim().starts_with('#'))
+        .find(|l| l.split_whitespace().nth(FSTAB_MOUNT_POINT).is_some_and(|mp| mp == "/"))
+        .and_then(|l| l.split_whitespace().nth(FSTAB_OPTIONS))
+        .and_then(|opts| crate::parse::extract_mount_option(opts, "subvol"))
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Cannot determine root subvolume name from /etc/fstab".into())
+}
+
+/// Mount the top-level subvolume (subvolid=5), run a closure, unmount.
+/// Guarantees unmount on both success and failure.
+pub fn with_toplevel<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce(&str) -> Result<T, String>,
+{
+    let toplevel = "/mnt/atomic-rollback-toplevel";
+    let (device, _) = root_device()?;
+
+    fs::create_dir_all(toplevel).map_err(|e| format!("mkdir {toplevel}: {e}"))?;
+    mount_subvolid(&device, toplevel, BTRFS_TOPLEVEL_SUBVOLID)?;
+
+    let result = f(toplevel);
+
+    let _ = umount(toplevel);
+    let _ = fs::remove_dir(toplevel);
+
+    result
 }
 
 // --- probe mount: mount a UUID temporarily if not already mounted ---

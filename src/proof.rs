@@ -458,6 +458,9 @@ mod tests {
         assert!(boots(&s9));
         let s10 = step10_separate_var(&verify_artifact(&s9)).unwrap();
         assert!(boots(&s10));
+
+        let synced = sync_filesystem(&s10);
+        assert!(reboot_safe(&synced));
         }
         }
         }
@@ -473,10 +476,12 @@ mod tests {
         assert!(boots(&rolled_back));
         assert!(data_safe(&rolled_back));
         assert!(rolled_back.old_root_preserved);
+        assert!(reboot_safe(&sync_filesystem(&rolled_back)));
 
         assert!(kernel_install(&migrated).is_none());
         let after_install = kernel_install(&verify_artifact(&migrated)).unwrap();
         assert!(boots(&after_install));
+        assert!(reboot_safe(&sync_filesystem(&after_install)));
 
         assert!(GRUB_BTRFS_WRITE_CONSTRAINT);
     }

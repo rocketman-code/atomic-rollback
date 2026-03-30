@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-use crate::{check, parse, platform::FEDORA as P, swap, tools};
+use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, FSTAB_MOUNT_POINT, FSTAB_FSTYPE, FSTAB_OPTIONS};
+use crate::{check, platform::FEDORA as P, swap, tools};
 
 /// Mount a target using fstab lookup (like `mount /boot/efi`).
 fn run_mount_fstab(target: &str) -> Result<(), String> {
@@ -92,17 +93,16 @@ fn step1_ensure_boot_on_btrfs() -> Result<(), String> {
         let _ = fs::create_dir_all("/mnt/old-boot");
         // Find the ext4 boot device from fstab
         let fstab = fs::read_to_string("/etc/fstab").map_err(|e| format!("read fstab: {e}"))?;
-        let boot_dev = fstab.lines()
+        let boot_device_field = fstab.lines()
             .filter(|l| !l.trim().starts_with('#'))
             .find(|l| {
                 let parts: Vec<&str> = l.split_whitespace().collect();
-                parts.len() >= 2 && parts[1] == "/boot" && parts.get(2).is_some_and(|t| *t == "ext4")
+                parts.len() >= 2 && parts[FSTAB_MOUNT_POINT] == "/boot" && parts.get(FSTAB_FSTYPE).is_some_and(|t| *t == "ext4")
             })
             .and_then(|l| l.split_whitespace().next())
-            .and_then(|dev| dev.strip_prefix("UUID="))
             .ok_or("cannot find ext4 /boot in fstab")?;
 
-        let device = tools::blkid_device_for_uuid(boot_dev)?;
+        let device = tools::resolve_fstab_device(boot_device_field)?;
         tools::mount_ro(&device, "/mnt/old-boot")?;
         tools::rsync("/mnt/old-boot/", "/boot/")?;
         tools::umount("/mnt/old-boot")?;
@@ -147,7 +147,8 @@ fn step2_create_symlinks() -> Result<(), String> {
 fn step3_set_default_subvol() -> Result<(), String> {
     println!("=== Step 3: Set default subvol to root ===");
 
-    let root_subvol = root_subvol_name()?;
+    let (_, fstab) = tools::root_device()?;
+    let root_subvol = tools::root_subvol_name(&fstab)?;
     let root_id = tools::btrfs_subvol_id_by_name("/", &root_subvol)?;
     tools::btrfs_subvol_set_default(root_id, "/")?;
     println!("  default subvol '{root_subvol}' set to ID {root_id}");
@@ -190,7 +191,7 @@ fn step5_update_fstab() -> Result<(), String> {
     let new_content: String = content.lines()
         .map(|line| {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 && parts[1] == "/boot" && parts[2] == "ext4"
+            if parts.len() >= 3 && parts[FSTAB_MOUNT_POINT] == "/boot" && parts[FSTAB_FSTYPE] == "ext4"
                && !line.trim().starts_with('#')
             {
                 format!("#MIGRATED: {line}")
@@ -365,29 +366,26 @@ fn step10_separate_var() -> Result<(), String> {
     // /var is inside root. Separate it using Btrfs snapshot for consistent capture.
     println!("  /var is inside root. Separating into its own subvolume");
 
-    // Read root mount entry from fstab. Derive /var entry from it.
-    let fstab = fs::read_to_string("/etc/fstab")
-        .map_err(|e| format!("read fstab: {e}"))?;
-    let root_entry: Vec<&str> = fstab.lines()
+    // Read root mount info from fstab. Derive /var entry from it.
+    let (device, fstab) = tools::root_device()?;
+    let root_line = fstab.lines()
         .filter(|l| !l.trim().starts_with('#'))
-        .find(|l| l.split_whitespace().nth(1).is_some_and(|mp| mp == "/"))
-        .ok_or("cannot find root entry in fstab")?
-        .split_whitespace()
-        .collect();
-    let root_device = root_entry.first()
-        .ok_or("fstab root entry has no device field")?;
-    let root_options = root_entry.get(3)
-        .ok_or("fstab root entry has no options field")?;
-
-    let device = tools::resolve_fstab_device(root_device)?;
+        .find(|l| l.split_whitespace().nth(FSTAB_MOUNT_POINT).is_some_and(|mp| mp == "/"))
+        .ok_or("cannot find root entry in fstab")?;
+    let root_device_field = root_line.split_whitespace().next()
+        .ok_or("fstab root entry has no device field")?
+        .to_string();
+    let root_options = root_line.split_whitespace().nth(FSTAB_OPTIONS)
+        .ok_or("fstab root entry has no options field")?
+        .to_string();
 
     // Mount top-level to create the new subvolume alongside root and home
     let toplevel = "/mnt/atomic-rollback-toplevel";
     fs::create_dir_all(toplevel).map_err(|e| format!("mkdir {toplevel}: {e}"))?;
-    tools::mount_subvolid(&device, toplevel, 5)?;
+    tools::mount_subvolid(&device, toplevel, BTRFS_TOPLEVEL_SUBVOLID)?;
 
     // 1. Snapshot root (atomic, captures /var at a consistent point)
-    let root_subvol = root_subvol_name()?;
+    let root_subvol = tools::root_subvol_name(&fstab)?;
     let snap = format!("{toplevel}/{root_subvol}.var-snapshot");
     if Path::new(&snap).exists() {
         tools::run_stdout("btrfs", &["subvolume", "delete", &snap])?;
@@ -420,13 +418,11 @@ fn step10_separate_var() -> Result<(), String> {
     let _ = fs::remove_dir(toplevel);
 
     // 5. Add /var mount to fstab via RENAME_EXCHANGE
-    let fstab_content = fs::read_to_string("/etc/fstab")
-        .map_err(|e| format!("read fstab: {e}"))?;
     // Derive /var mount options from root. Replace subvol=<name> with subvol=var.
     // Preserve device reference format (UUID=, /dev/, LABEL=) and compression.
     let var_options = root_options.replace(&format!("subvol={root_subvol}"), "subvol=var");
-    let var_line = format!("{root_device} /var btrfs {var_options} 0 0");
-    let new_fstab = format!("{fstab_content}\n{var_line}\n");
+    let var_line = format!("{root_device_field} /var btrfs {var_options} 0 0");
+    let new_fstab = format!("{fstab}\n{var_line}\n");
 
     fs::write("/etc/fstab.new", &new_fstab)
         .map_err(|e| format!("write fstab.new: {e}"))?;
@@ -464,18 +460,6 @@ fn step8_fix_grubenv() -> Result<(), String> {
 
     println!("  {}/ set NOCOW, grubenv recreated", P.grub_dir);
     Ok(())
-}
-
-fn root_subvol_name() -> Result<String, String> {
-    let fstab = fs::read_to_string("/etc/fstab")
-        .map_err(|e| format!("read fstab: {e}"))?;
-    fstab.lines()
-        .filter(|l| !l.trim().starts_with('#'))
-        .find(|l| l.split_whitespace().nth(1).is_some_and(|mp| mp == "/"))
-        .and_then(|l| l.split_whitespace().nth(3))
-        .and_then(|opts| parse::extract_mount_option(opts, "subvol"))
-        .map(|s| s.to_string())
-        .ok_or("cannot determine root subvolume name from fstab (missing subvol= option)".into())
 }
 
 fn current_kernel_version() -> Result<String, String> {

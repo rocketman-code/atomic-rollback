@@ -1,4 +1,5 @@
 mod check;
+mod consts;
 mod grub;
 mod kernel_hook;
 mod migrate;

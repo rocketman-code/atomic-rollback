@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use crate::consts::{FSTAB_MOUNT_POINT, FSTAB_FSTYPE, FSTAB_OPTIONS};
 use crate::grub::GrubContext;
 use crate::parse;
 use crate::platform::FEDORA as P;
@@ -187,8 +188,8 @@ fn check_default_subvol_matches_root(mount_point: &str, root: &Path) -> CheckRes
 
     let root_subvol_name = fstab.lines()
         .filter(|l| !l.trim().starts_with('#'))
-        .find(|l| l.split_whitespace().nth(1).is_some_and(|mp| mp == "/"))
-        .and_then(|l| l.split_whitespace().nth(3))
+        .find(|l| l.split_whitespace().nth(FSTAB_MOUNT_POINT).is_some_and(|mp| mp == "/"))
+        .and_then(|l| l.split_whitespace().nth(FSTAB_OPTIONS))
         .and_then(|opts| parse::extract_mount_option(opts, "subvol"));
 
     let root_subvol_name = match root_subvol_name {
@@ -369,8 +370,8 @@ fn check_fstab_mounts(root: &Path) -> Vec<CheckResult> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 3 { continue; }
 
-        let (device, mount_point, fstype) = (parts[0], parts[1], parts[2]);
-        let options = parts.get(3).copied().unwrap_or("");
+        let (device, mount_point, fstype) = (parts[0], parts[FSTAB_MOUNT_POINT], parts[FSTAB_FSTYPE]);
+        let options = parts.get(FSTAB_OPTIONS).copied().unwrap_or("");
 
         if options.contains("nofail") || fstype == "swap"
            || mount_point == "none" || mount_point == "swap" { continue; }
