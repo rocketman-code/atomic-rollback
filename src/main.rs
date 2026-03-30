@@ -35,8 +35,15 @@ fn main() {
                 }
             }
         }
+        Some("setup") => {
+            println!("atomic-rollback: setting up snapshots and rollback\n");
+            if let Err(e) = migrate::setup() {
+                eprintln!("Setup failed: {e}");
+                std::process::exit(1);
+            }
+        }
         Some("migrate") => {
-            println!("atomic-rollback: migrating layout for atomic rollback\n");
+            println!("atomic-rollback: full boot migration for atomic rollback\n");
             if let Err(e) = migrate::migrate() {
                 eprintln!("Migration failed: {e}");
                 std::process::exit(1);
@@ -76,10 +83,11 @@ fn main() {
             eprintln!("atomic-rollback: atomic system rollback for Fedora via Btrfs subvolume swap");
             eprintln!();
             eprintln!("usage:");
-            eprintln!("  atomic-rollback check             verify the system is bootable");
-            eprintln!("  atomic-rollback migrate            migrate layout for atomic rollback");
-            eprintln!("  atomic-rollback snapshot [name]    create a snapshot before updating");
-            eprintln!("  atomic-rollback rollback [name]    roll back to a snapshot");
+            eprintln!("  atomic-rollback check              verify the system is bootable");
+            eprintln!("  atomic-rollback setup               separate /var, enable snapshots and rollback");
+            eprintln!("  atomic-rollback migrate             full boot migration for complete kernel rollback");
+            eprintln!("  atomic-rollback snapshot [name]     create a snapshot before updating");
+            eprintln!("  atomic-rollback rollback [name]     roll back to a snapshot");
             std::process::exit(2);
         }
     }

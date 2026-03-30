@@ -10,8 +10,31 @@ fn run_mount_fstab(target: &str) -> Result<(), String> {
     if status.success() { Ok(()) } else { Err(format!("mount {target} failed")) }
 }
 
-/// Migrate the system layout for atomic rollback.
-/// 8 steps, each gated by the BOOTS predicate.
+/// Setup: separate /var and enable root snapshots and rollback.
+/// No /boot changes, no ESP modification, no GRUB Btrfs dependency.
+/// Works on stock Fedora partition layout.
+/// Proof: theorem 12 (setup_is_safe).
+pub fn setup() -> Result<(), String> {
+    let root = Path::new("/");
+
+    check::gate("0-baseline", root, None);
+
+    step3_set_default_subvol()?;
+    check::gate("1-default-subvol", root, None);
+
+    step10_separate_var()?;
+    check::gate("2-var", root, Some("/etc/fstab.new"));
+
+    tools::sync_filesystem("/")?;
+
+    println!("Setup complete. Snapshots and rollback are enabled.");
+    println!("Install the dnf plugin for automatic pre-update snapshots.");
+    Ok(())
+}
+
+/// Full boot migration for atomic rollback with kernel rollback.
+/// Moves /boot from ext4 to Btrfs, updates ESP, installs kernel-install hook.
+/// 10 steps, each gated by the BOOTS predicate.
 /// Each step: create alongside, verify, atomic swap.
 pub fn migrate() -> Result<(), String> {
     let root = Path::new("/");

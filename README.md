@@ -16,7 +16,10 @@ Running outside these requirements is running outside what the tool has been ver
 ## Quick start
 
 ```
-# One-time setup (restructures the layout for safe rollback)
+# Quick setup (separates /var, enables snapshots and rollback)
+sudo atomic-rollback setup
+
+# Or full boot migration (also rolls back kernels automatically)
 sudo atomic-rollback migrate
 sudo reboot
 
@@ -32,7 +35,9 @@ With the dnf plugin installed, snapshots are automatic. Manual snapshots are sti
 
 `sudo atomic-rollback check` verifies the system is bootable. Reports what failed, why it matters, and what to do about it.
 
-`sudo atomic-rollback migrate` restructures the filesystem layout so rollback works correctly. Run this once. Every step verifies the system remains bootable before proceeding. If any step fails, the system is unchanged. Reboot after migration to confirm.
+`sudo atomic-rollback setup` separates /var and enables root snapshots and rollback. Works on the stock Fedora partition layout. No /boot changes, no ESP modification, no GRUB Btrfs dependency. After a rollback, the user selects the correct kernel from the GRUB menu if needed.
+
+`sudo atomic-rollback migrate` full boot migration. Moves /boot from ext4 to Btrfs so kernels are included in snapshots. After rollback, the correct kernel boots automatically. Every step verifies the system remains bootable before proceeding. If any step fails, the system is unchanged.
 
 `sudo atomic-rollback snapshot [name]` creates a snapshot of the current system state. Defaults to `root.pre-update`. Automatic via the dnf plugin; manual use for non-dnf changes. Idempotent: if the snapshot already exists, the command succeeds (existing protection is in place).
 
@@ -102,7 +107,7 @@ The bootability check (`atomic-rollback check`) evaluates a predicate derived fr
 
 ## Verification
 
-The migration state machine is formally verified using [Kani](https://github.com/model-checking/kani). Eleven theorems are machine-checked:
+The state machine is formally verified using [Kani](https://github.com/model-checking/kani). Twelve theorems are machine-checked:
 
 1. Migration preserves bootability at every step.
 2. Rollback preserves bootability (and fails without updating the default subvolume).
@@ -115,6 +120,7 @@ The migration state machine is formally verified using [Kani](https://github.com
 9. /var separation produces consistent config: device reference format and compression options match the root mount entry, for all valid initial configurations.
 10. Every exit point (migration, rollback, kernel hook) is both bootable AND durable. `syncfs` forces the Btrfs transaction to disk before the user reboots. Derived from kernel source: `RENAME_EXCHANGE` and `set-default` use `btrfs_end_transaction` (in-memory only), not `btrfs_commit_transaction` (on-disk).
 11. User data is never lost. /home and /var are separate subvolumes, untouched by any swap. After rollback, the old root is preserved at the snapshot name. No operation in the tool deletes root, /home, or /var.
+12. Setup (root-only, no /boot changes) preserves bootability, is reboot-safe, and data-safe. Rollback works on the setup'd system.
 
 The proofs are parameterized over all valid initial states: Cloud VM and bare metal, with and without separate /var, across all fstab device reference formats (UUID=, /dev/, LABEL=) and compression options (zstd, lzo, none). The source is in `src/proof.rs`.
 

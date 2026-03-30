@@ -841,4 +841,39 @@ mod verification {
         let installed = kernel_install(&verify_artifact(&migrated)).unwrap();
         assert!(data_safe(&installed));
     }
+
+    /// THEOREM 12: setup (root-only, no /boot changes) preserves
+    /// bootability, is reboot-safe after sync, and data-safe.
+    /// Setup mode: step3 (set-default) + step10 (/var separation). No /boot,
+    /// no ESP, no grubenv, no kernel-install hook.
+    #[kani::proof]
+    fn setup_is_safe() {
+        let has_btrfs_rel: bool = kani::any();
+        let dev = any_device_ref();
+        let comp = any_compression();
+
+        // Light mode only applies to unseparated /var (bare metal).
+        // /boot stays on ext4. ESP untouched.
+        let s0 = initial_state(has_btrfs_rel, false, dev, comp);
+        assert!(boots(&s0));
+
+        // Step 3: set default subvol to root
+        let s3 = step3_set_default_subvol(&s0);
+        assert!(boots(&s3));
+
+        // Step 10: separate /var (verify before swap)
+        let s10 = step10_separate_var(&verify_artifact(&s3)).unwrap();
+        assert!(boots(&s10));
+
+        // Sync and verify reboot-safe
+        let synced = sync_filesystem(&s10);
+        assert!(reboot_safe(&synced));
+        assert!(data_safe(&synced));
+
+        // Rollback works on light-migrated system
+        let rolled_back = rollback(&verify_artifact(&synced)).unwrap();
+        assert!(boots(&rolled_back));
+        assert!(data_safe(&rolled_back));
+        assert!(rolled_back.old_root_preserved);
+    }
 }

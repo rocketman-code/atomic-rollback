@@ -2,6 +2,13 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [Unreleased]
+
+### Added
+
+- `setup` command: separates /var and enables root snapshots and rollback without touching /boot or the ESP. Works on stock Fedora partition layout. No GRUB Btrfs dependency. Closes #1.
+- 12th Kani theorem (`setup_is_safe`): setup preserves bootability, is reboot-safe after sync, data-safe, and rollback works on the setup'd system.
+
 ## [0.1.4] - 2026-03-29
 
 ### Added
