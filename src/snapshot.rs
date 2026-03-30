@@ -40,7 +40,7 @@ pub fn snapshot(name: Option<&str>) -> Result<String, String> {
 fn create_snapshot(name: &str, fstab: &str) -> Result<String, String> {
     let snap_path = format!("{TOPLEVEL}/{name}");
     if Path::new(&snap_path).exists() {
-        // Snapshot already exists — the user is protected. Not an error.
+        // Snapshot already exists; the user is protected. Not an error.
         // This makes the command idempotent: safe for dnf pre_transaction hooks
         // that may fire multiple times.
         eprintln!("Snapshot '{name}' already exists; using existing protection.");

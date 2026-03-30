@@ -41,6 +41,10 @@ fn handle_add(kver: &str) -> Result<(), String> {
     // Fix BLS entry paths if grub2-mkrelpath wrote wrong prefix.
     fix_bls_paths(kver)?;
 
+    // Flush symlinks and BLS swap to disk. The user may reboot at any
+    // time after kernel-install completes.
+    let _ = tools::sync_filesystem("/");
+
     // Gate: verify the system is still bootable.
     match check::verify_bootable(Path::new("/")) {
         check::BootStatus::Pass | check::BootStatus::Warn => Ok(()),

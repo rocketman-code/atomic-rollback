@@ -49,6 +49,11 @@ pub fn migrate() -> Result<(), String> {
     step10_separate_var()?;
     check::gate("10-var", root, Some("/etc/fstab.new"));
 
+    // Flush all changes to disk before telling the user to reboot.
+    // Btrfs RENAME_EXCHANGE and set-default use btrfs_end_transaction
+    // (in-memory journal), not btrfs_commit_transaction (on-disk).
+    tools::sync_filesystem("/")?;
+
     println!("Migration complete. All gates passed.");
     Ok(())
 }

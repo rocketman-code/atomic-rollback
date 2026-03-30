@@ -51,6 +51,12 @@ pub struct SystemState {
     // Set by verify_artifact, consumed by any swap step.
     // Uniform pattern for migration steps, rollback, and kernel install.
     pub artifact_verified: bool,
+    // Durability: have all pending changes been persisted to disk?
+    // Derived from kernel source:
+    //   btrfs_end_transaction (RENAME_EXCHANGE, set-default, symlink) = false
+    //   btrfs_commit_transaction (snapshot) = true
+    //   sync_filesystem() = true
+    pub durable: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -187,6 +193,7 @@ pub fn initial_state(
         grub_cfg_current: true,
         grubenv_nocow: false,
         artifact_verified: false,
+        durable: true, // system at rest, everything on disk
     }
 }
 
@@ -197,7 +204,7 @@ pub fn initial_state(
 pub fn step1_copy_boot(s: &SystemState) -> SystemState {
     let mut next = *s;
     next.kernel_on_btrfs = true;
-    // ext4 kernel still exists; we copied, not moved
+    next.durable = false; // rsync: btrfs_end_transaction
     next
 }
 
@@ -205,13 +212,15 @@ pub fn step1_copy_boot(s: &SystemState) -> SystemState {
 pub fn step2_create_symlinks(s: &SystemState) -> SystemState {
     let mut next = *s;
     next.symlinks_exist = true;
+    next.durable = false; // symlink: btrfs_end_transaction
     next
 }
 
 /// Step 3: Set default subvolume to root.
 pub fn step3_set_default_subvol(s: &SystemState) -> SystemState {
     let mut next = *s;
-    next.default_subvol = s.root_subvol; // match whatever is named "root"
+    next.default_subvol = s.root_subvol;
+    next.durable = false; // set-default: btrfs_end_transaction
     next
 }
 
@@ -222,6 +231,7 @@ pub fn step3_set_default_subvol(s: &SystemState) -> SystemState {
 pub fn step4_switch_boot(s: &SystemState) -> SystemState {
     let mut next = *s;
     next.ext4_boot_mounted = false;
+    // umount does not sync btrfs; prior btrfs changes remain in journal
     next
 }
 
@@ -232,6 +242,7 @@ pub fn step5_update_fstab(s: &SystemState) -> Option<SystemState> {
     let mut next = *s;
     next.fstab_has_ext4_boot = false;
     next.artifact_verified = false;
+    next.durable = false; // RENAME_EXCHANGE: btrfs_end_transaction
     Some(next)
 }
 
@@ -242,6 +253,7 @@ pub fn step6_rebuild_initramfs(s: &SystemState) -> Option<SystemState> {
     let mut next = *s;
     next.initramfs_current = true;
     next.artifact_verified = false;
+    next.durable = false; // RENAME_EXCHANGE: btrfs_end_transaction
     Some(next)
 }
 
@@ -253,6 +265,7 @@ pub fn step7_regen_grub_cfg(s: &SystemState) -> Option<SystemState> {
     next.grub_cfg_on_btrfs = true;
     next.grub_cfg_current = true;
     next.artifact_verified = false;
+    next.durable = false; // RENAME_EXCHANGE: btrfs_end_transaction
     Some(next)
 }
 
@@ -263,6 +276,7 @@ pub fn step7_regen_grub_cfg(s: &SystemState) -> Option<SystemState> {
 pub fn step8_fix_grubenv(s: &SystemState) -> SystemState {
     let mut next = *s;
     next.grubenv_nocow = true;
+    next.durable = false; // chattr + editenv: btrfs_end_transaction
     next
 }
 
@@ -275,6 +289,7 @@ pub fn step9_update_esp(s: &SystemState) -> Option<SystemState> {
     next.esp_has_btrfs_relative = true;
     next.esp_prefix_has_boot = true;
     next.artifact_verified = false;
+    next.durable = false; // RENAME_EXCHANGE on vfat: not synced
     Some(next)
 }
 
@@ -292,6 +307,7 @@ pub fn step10_separate_var(s: &SystemState) -> Option<SystemState> {
         next.var_compression = s.root_compression;
     }
     next.artifact_verified = false;
+    next.durable = false; // RENAME_EXCHANGE: btrfs_end_transaction
     Some(next)
 }
 
@@ -313,7 +329,23 @@ pub fn kernel_install(s: &SystemState) -> Option<SystemState> {
     if !s.artifact_verified { return None; }
     let mut next = *s;
     next.artifact_verified = false;
+    next.durable = false; // RENAME_EXCHANGE + symlink: btrfs_end_transaction
     Some(next)
+}
+
+/// REBOOT_SAFE: the system is bootable AND changes are on disk.
+/// BOOTS alone doesn't guarantee survival across power loss.
+pub fn reboot_safe(s: &SystemState) -> bool {
+    boots(s) && s.durable
+}
+
+/// Persist all pending changes to disk.
+/// In the implementation: syncfs() on the btrfs mount.
+/// In the model: sets durable = true.
+pub fn sync_filesystem(s: &SystemState) -> SystemState {
+    let mut next = *s;
+    next.durable = true;
+    next
 }
 
 /// Verify an artifact before RENAME_EXCHANGE.
@@ -337,6 +369,7 @@ pub fn rollback(s: &SystemState) -> Option<SystemState> {
     next.root_subvol = SubvolId::Id259;
     next.default_subvol = SubvolId::Id259;
     next.artifact_verified = false;
+    next.durable = false; // RENAME_EXCHANGE + set-default: btrfs_end_transaction
     Some(next)
 }
 
@@ -703,6 +736,30 @@ mod verification {
 
         let s7 = step7_regen_grub_cfg(&verify_artifact(&s6)).unwrap();
         assert!(boots(&s7));
+    }
+
+    /// THEOREM 10: All exit points are reboot-safe.
+    /// BOOTS(S) is necessary but not sufficient. REBOOT_SAFE(S) requires durability.
+    /// WITHOUT sync_filesystem, this theorem FAILS; the proof tells us where
+    /// the implementation needs sync.
+    #[kani::proof]
+    fn all_exit_points_are_reboot_safe() {
+        let has_btrfs_rel: bool = kani::any();
+        let var_sep: bool = kani::any();
+        let dev = any_device_ref();
+        let comp = any_compression();
+
+        // After migration: sync then reboot
+        let migrated = sync_filesystem(&full_migration(has_btrfs_rel, var_sep, dev, comp));
+        assert!(reboot_safe(&migrated));
+
+        // After rollback: sync then reboot
+        let rolled_back = sync_filesystem(&rollback(&verify_artifact(&migrated)).unwrap());
+        assert!(reboot_safe(&rolled_back));
+
+        // After kernel install: sync then reboot
+        let installed = sync_filesystem(&kernel_install(&verify_artifact(&migrated)).unwrap());
+        assert!(reboot_safe(&installed));
     }
 
     /// THEOREM 9: step10 produces /var config consistent with root.

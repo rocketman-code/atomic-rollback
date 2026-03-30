@@ -89,7 +89,10 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
         return Err(format!("rollback aborted: set-default failed: {e}"));
     }
 
-    // Rollback succeeded. Cleanup is best-effort — a stale mount
+    // Flush to disk before telling the user to reboot.
+    tools::sync_filesystem(toplevel)?;
+
+    // Rollback succeeded. Cleanup is best-effort; a stale mount
     // doesn't affect the boot chain or the rollback.
     let _ = tools::umount(toplevel);
     let _ = std::fs::remove_dir(toplevel);

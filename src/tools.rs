@@ -1,6 +1,23 @@
+use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::Command;
 use std::fs;
+
+/// Flush all pending filesystem changes to disk.
+/// Btrfs operations (RENAME_EXCHANGE, set-default) use btrfs_end_transaction,
+/// which commits to the in-memory journal but NOT to disk. Changes are lost
+/// on power failure until the next btrfs transaction commit (up to 30s).
+/// syncfs forces the commit. Call before any exit point where the user reboots.
+pub fn sync_filesystem(path: &str) -> Result<(), String> {
+    let f = fs::File::open(path)
+        .map_err(|e| format!("open {path} for sync: {e}"))?;
+    let ret = unsafe { libc::syncfs(f.as_raw_fd()) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(format!("syncfs {path}: {}", std::io::Error::last_os_error()))
+    }
+}
 
 /// Run a command, return stdout as trimmed string. Fails if exit code != 0.
 pub fn run_stdout(cmd: &str, args: &[&str]) -> Result<String, String> {
