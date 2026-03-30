@@ -29,7 +29,7 @@ sudo atomic-rollback rollback
 sudo reboot
 ```
 
-With the dnf plugin installed, snapshots are automatic. Manual snapshots are still available for non-dnf changes: `sudo atomic-rollback snapshot [name]`.
+With the dnf plugin installed, snapshots are automatic. Manual snapshots are still available for non-dnf changes: `sudo atomic-rollback snapshot create [name]`.
 
 ## Commands
 
@@ -39,7 +39,13 @@ With the dnf plugin installed, snapshots are automatic. Manual snapshots are sti
 
 `sudo atomic-rollback migrate` full boot migration. Moves /boot from ext4 to Btrfs so kernels are included in snapshots. After rollback, the correct kernel boots automatically. Every step verifies the system remains bootable before proceeding. If any step fails, the system is unchanged.
 
-`sudo atomic-rollback snapshot [name]` creates a snapshot of the current system state. Defaults to `root.pre-update`. Automatic via the dnf plugin; manual use for non-dnf changes. Idempotent: if the snapshot already exists, the command succeeds (existing protection is in place).
+`sudo atomic-rollback snapshot` creates a snapshot of the current system state with the default name `root.pre-update`. Automatic via the dnf plugin; manual use for non-dnf changes. Idempotent: if the snapshot already exists, the command succeeds (existing protection is in place).
+
+`sudo atomic-rollback snapshot create [name]` creates a snapshot with an optional name. Defaults to `root.pre-update` if no name is given.
+
+`sudo atomic-rollback snapshot list` shows available snapshots. System subvolumes (root, home, var) are excluded.
+
+`sudo atomic-rollback snapshot delete <name>` deletes a snapshot. Refuses subvolumes referenced by fstab (system subvolumes). Mounted and default subvolume protection is provided by the kernel and btrfs-progs.
 
 `sudo atomic-rollback rollback [name]` restores the system to a snapshot. Defaults to `root.pre-update`. Reboot after rollback. The previous (broken) state is preserved and can be inspected or deleted.
 
@@ -107,7 +113,7 @@ The bootability check (`atomic-rollback check`) evaluates a predicate derived fr
 
 ## Verification
 
-The state machine is formally verified using [Kani](https://github.com/model-checking/kani). Twelve theorems are machine-checked:
+The state machine is formally verified using [Kani](https://github.com/model-checking/kani). The following theorems are machine-checked:
 
 1. Migration preserves bootability at every step.
 2. Rollback preserves bootability (and fails without updating the default subvolume).
@@ -124,7 +130,7 @@ The state machine is formally verified using [Kani](https://github.com/model-che
 
 The proofs are parameterized over all valid initial states: Cloud VM and bare metal, with and without separate /var, across all fstab device reference formats (UUID=, /dev/, LABEL=) and compression options (zstd, lzo, none). The source is in `src/proof.rs`.
 
-The parser functions (bootability check, BLS entry parsing, mount option extraction) are formally verified inline using [Verus](https://github.com/verus-lang/verus). Every loop is proven to terminate, every array access is proven in bounds, and every returned range is proven valid. The specifications live in `src/parse.rs` alongside the code they verify, inside a `verus!` macro block. Under normal `cargo build`, the specs are erased. Under `cargo verus build`, fifteen conditions are machine-checked.
+The parser functions (bootability check, BLS entry parsing, mount option extraction) are formally verified inline using [Verus](https://github.com/verus-lang/verus). Every loop is proven to terminate, every array access is proven in bounds, and every returned range is proven valid. The specifications live in `src/parse.rs` alongside the code they verify, inside a `verus!` macro block. Under normal `cargo build`, the specs are erased. Under `cargo verus build`, all conditions are machine-checked.
 
 ## License
 

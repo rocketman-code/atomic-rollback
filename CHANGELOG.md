@@ -2,6 +2,23 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [Unreleased]
+
+### Added
+
+- `snapshot create [name]` subcommand: explicit snapshot creation with optional name.
+- `snapshot list` subcommand: shows available snapshots, excluding system subvolumes.
+- `snapshot delete <name>` subcommand: refuses fstab-referenced system subvolumes (verified in VM that btrfs-progs does not check fstab). Mounted-subvolume and default-subvolume protection delegated to kernel and btrfs-progs respectively.
+- `--help` and `-h` at top level and for snapshot subcommands.
+
+### Changed
+
+- `snapshot <name>` replaced by `snapshot create <name>`. Bare `snapshot` (no args) still creates with the default name. Unrecognized snapshot subcommands are now rejected instead of silently treated as snapshot names.
+
+### Fixed
+
+- Migration step 1 now handles all fstab device reference formats (UUID=, LABEL=, /dev/ paths). Previously only UUID= was supported.
+
 ## [0.2.0] - 2026-03-29
 
 ### Added
