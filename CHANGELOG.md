@@ -2,7 +2,7 @@
 
 All notable changes to atomic-rollback are documented here.
 
-## [Unreleased]
+## [0.2.0] - 2026-03-29
 
 ### Added
 
