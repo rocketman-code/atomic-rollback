@@ -2,6 +2,16 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.1.4] - 2026-03-29
+
+### Added
+
+- 11th Kani theorem (`data_safe_across_all_operations`): /home and /var are never modified by any operation (separate subvolumes, not part of any swap). After rollback, the old root is preserved at the snapshot name. No operation in the tool destroys user data.
+
+### Fixed
+
+- ESP grub.cfg substitution now verifies all three model properties (UUID, `btrfs_relative_path`, prefix path) on the output BEFORE the swap. Previously only the UUID was checked. If any property is missing, the swap is refused and the old ESP is preserved. Closes the gap that allowed prefix doubling to reach the swap during development.
+
 ## [0.1.3] - 2026-03-29
 
 ### Added
