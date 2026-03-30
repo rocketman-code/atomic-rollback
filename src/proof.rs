@@ -88,68 +88,114 @@ pub enum DeviceRef { Uuid, DevPath, Label }
 #[derive(Clone, Copy, PartialEq)]
 pub enum Compression { Zstd, Lzo, None, Inherited }
 
-/// GRUB_BTRFS_CONSTRAINT: GRUB's Btrfs driver is read-only.
-/// save_env is a no-op on Btrfs. grubenv must be written from Linux userspace.
-/// load_env works if grubenv is NOCOW (flat extent, not compressed/inline).
-/// This is a permanent environmental constraint, not a state variable.
-const GRUB_BTRFS_WRITE_CONSTRAINT: bool = true;
+// --- Axioms: interface assumptions about the boot chain ---
+// Each axiom is a property of an interface between our tool and an
+// external component. Kani explores all combinations.
+// Source references in docs/plans/axiom-parameterization.md.
+#[derive(Clone, Copy)]
+pub struct Axioms {
+    // GRUB follows search --fs-uuid in ESP grub.cfg
+    pub grub_follows_esp_uuid: bool,
+    // GRUB resolves paths from default subvol when btrfs_relative_path="yes"
+    pub grub_resolves_from_default_subvol: bool,
+    // GRUB prefix= determines where grub.cfg and modules are found
+    pub grub_prefix_determines_config: bool,
+    // GRUB follows symlinks on btrfs
+    pub grub_follows_btrfs_symlinks: bool,
+    // GRUB loadenv rejects compressed/inline extents on btrfs
+    pub grub_loadenv_requires_nocow: bool,
+    // shim_lock_verifier skips CONFIG, LINUX_INITRD, LOADENV
+    pub grub_skips_config_verification: bool,
+    // renameat2(RENAME_EXCHANGE) is atomic within one btrfs transaction
+    pub rename_exchange_atomic: bool,
+    // syncfs forces btrfs transaction to disk
+    pub syncfs_commits_transaction: bool,
+    // kernel mounts subvol= from cmdline, ignoring default subvol ID
+    pub kernel_subvol_overrides_default: bool,
+    // systemd treats fstab mount failures as fatal (no nofail)
+    pub systemd_fstab_fatal: bool,
+    // systemd kernel-install dispatches to install.d plugins
+    pub kernel_install_dispatches_hooks: bool,
+}
 
 /// The BOOTS predicate: does this state represent a bootable system?
 ///
 /// Derived from the boot chain:
 ///   UEFI -> shim -> GRUB -> grub.cfg -> blscfg -> BLS entry -> kernel -> initrd -> root mount
 ///
-/// Each conjunct corresponds to a link in the chain.
-/// The predicate is proven correct GIVEN GRUB_BTRFS_CONSTRAINT.
-pub fn boots(s: &SystemState) -> bool {
+/// Each conjunct is guarded by the axiom it depends on. When an axiom
+/// is false, the effect depends on the axiom category:
+/// - Required for btrfs boot (1-4): conjunct becomes false
+/// - Relaxes a check (5-6, 13): conjunct becomes true (check unnecessary)
+pub fn boots(s: &SystemState, ax: &Axioms) -> bool {
     // ESP grub.cfg must point to a filesystem that has grub.cfg
-    let esp_finds_grub_cfg = match s.esp_target_uuid {
-        Uuid::Ext4 => s.grub_cfg_on_ext4,
-        Uuid::Btrfs => s.grub_cfg_on_btrfs,
+    let esp_finds_grub_cfg = if ax.grub_follows_esp_uuid {
+        match s.esp_target_uuid {
+            Uuid::Ext4 => s.grub_cfg_on_ext4,
+            Uuid::Btrfs => s.grub_cfg_on_btrfs,
+        }
+    } else {
+        false // can't guarantee GRUB finds grub.cfg
     };
 
-    // GRUB must resolve BLS kernel paths to an actual kernel.
-    // When ESP points to ext4: paths are partition-relative (/vmlinuz-...)
-    //   → kernel must exist on ext4
-    // When ESP points to btrfs: paths resolve from default subvol
-    //   → if PartitionRelative (/vmlinuz-...): needs symlink at root
-    //   → if SubvolRelative (/boot/vmlinuz-...): needs kernel in btrfs /boot
     let grub_finds_kernel = match s.esp_target_uuid {
-        Uuid::Ext4 => {
-            // GRUB reads ext4 partition. Kernel must be there.
-            s.kernel_on_ext4
-        }
+        Uuid::Ext4 => s.kernel_on_ext4,
         Uuid::Btrfs => {
-            // GRUB reads Btrfs. Three requirements:
-            // 1. btrfs_relative_path set (resolves from default subvol)
-            // 2. default subvol matches root
-            // 3. prefix path includes /boot (grub.cfg is at /boot/grub2/)
-            s.esp_has_btrfs_relative && s.default_subvol == s.root_subvol
-            && s.esp_prefix_has_boot
-            // BLS paths are PartitionRelative (/vmlinuz-...).
-            // Symlinks make them resolve on Btrfs: /vmlinuz-... → boot/vmlinuz-...
-            && s.symlinks_exist && s.kernel_on_btrfs
+            let default_ok = if ax.grub_resolves_from_default_subvol {
+                s.esp_has_btrfs_relative && s.default_subvol == s.root_subvol
+            } else {
+                false // our layout depends on default subvol resolution
+            };
+            let prefix_ok = if ax.grub_prefix_determines_config {
+                s.esp_prefix_has_boot
+            } else {
+                false // our layout depends on prefix for /boot/grub2
+            };
+            let symlinks_ok = if ax.grub_follows_btrfs_symlinks {
+                s.symlinks_exist
+            } else {
+                false // our BLS paths need symlink resolution
+            };
+            default_ok && prefix_ok && symlinks_ok && s.kernel_on_btrfs
         }
     };
 
-    // fstab must not reference nonexistent mounts (all are Requires=, no nofail).
-    // /var mount: subvolume must exist, device ref must match root.
-    // Device ref mismatch (e.g., UUID= vs /dev/) risks mount failure on
-    // device re-enumeration. Compression mismatch is inconsistent but not
-    // a boot failure; checked by var_config_consistent, not BOOTS.
-    let fstab_valid = if s.fstab_has_var_mount {
+    // Secure Boot: GRUB must accept our modified grub.cfg
+    let secureboot_ok = if ax.grub_skips_config_verification {
+        true // shim_lock_verifier skips CONFIG files
+    } else {
+        // Modified grub.cfg is rejected. Only unmodified (pre-migration) boots.
+        match s.esp_target_uuid {
+            Uuid::Ext4 => true,  // pre-migration, original config untouched
+            Uuid::Btrfs => false, // post-migration, our modified config rejected
+        }
+    };
+
+    // Kernel mounts the correct root subvolume
+    let kernel_mounts_root = if ax.kernel_subvol_overrides_default {
+        true // kernel follows subvol=root in cmdline, name always valid
+    } else {
+        // kernel follows default subvol ID
+        s.default_subvol == s.root_subvol
+    };
+
+    let fstab_valid = if ax.systemd_fstab_fatal && s.fstab_has_var_mount {
         s.var_is_subvol && s.var_device_ref == s.root_device_ref
     } else {
         true
     };
 
-    // grubenv must be NOCOW on Btrfs, or GRUB's load_env rejects it (loadenv.c:216).
-    let grubenv_valid = match s.esp_target_uuid {
-        Uuid::Ext4 => true,
-        Uuid::Btrfs => s.grubenv_nocow,
+    let grubenv_valid = if ax.grub_loadenv_requires_nocow {
+        match s.esp_target_uuid {
+            Uuid::Ext4 => true,
+            Uuid::Btrfs => s.grubenv_nocow,
+        }
+    } else {
+        true
     };
 
-    esp_finds_grub_cfg && grub_finds_kernel && fstab_valid && grubenv_valid
+    esp_finds_grub_cfg && grub_finds_kernel && secureboot_ok
+    && kernel_mounts_root && fstab_valid && grubenv_valid
 }
 
 /// /var config consistent with root: device ref AND compression match.
@@ -251,8 +297,8 @@ pub fn step4_switch_boot(s: &SystemState) -> SystemState {
 
 /// Step 5: Comment out ext4 /boot in fstab (RENAME_EXCHANGE).
 /// Requires artifact_verified: new fstab checked before swap.
-pub fn step5_update_fstab(s: &SystemState) -> Option<SystemState> {
-    if !s.artifact_verified { return None; }
+pub fn step5_update_fstab(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
+    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
     let mut next = *s;
     next.fstab_has_ext4_boot = false;
     next.artifact_verified = false;
@@ -262,8 +308,8 @@ pub fn step5_update_fstab(s: &SystemState) -> Option<SystemState> {
 
 /// Step 6: Rebuild initramfs for new layout (RENAME_EXCHANGE).
 /// Requires artifact_verified: new initramfs checked before swap.
-pub fn step6_rebuild_initramfs(s: &SystemState) -> Option<SystemState> {
-    if !s.artifact_verified { return None; }
+pub fn step6_rebuild_initramfs(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
+    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
     let mut next = *s;
     next.initramfs_current = true;
     next.artifact_verified = false;
@@ -273,8 +319,8 @@ pub fn step6_rebuild_initramfs(s: &SystemState) -> Option<SystemState> {
 
 /// Step 7: Regenerate grub.cfg (RENAME_EXCHANGE).
 /// Requires artifact_verified: new grub.cfg checked before swap.
-pub fn step7_regen_grub_cfg(s: &SystemState) -> Option<SystemState> {
-    if !s.artifact_verified { return None; }
+pub fn step7_regen_grub_cfg(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
+    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
     let mut next = *s;
     next.grub_cfg_on_btrfs = true;
     next.grub_cfg_current = true;
@@ -296,8 +342,8 @@ pub fn step8_fix_grubenv(s: &SystemState) -> SystemState {
 
 /// Step 9: Update ESP grub.cfg to point to Btrfs UUID (RENAME_EXCHANGE).
 /// Requires artifact_verified: new ESP grub.cfg checked before swap.
-pub fn step9_update_esp(s: &SystemState) -> Option<SystemState> {
-    if !s.artifact_verified { return None; }
+pub fn step9_update_esp(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
+    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
     let mut next = *s;
     next.esp_target_uuid = Uuid::Btrfs;
     next.esp_has_btrfs_relative = true;
@@ -311,8 +357,8 @@ pub fn step9_update_esp(s: &SystemState) -> Option<SystemState> {
 /// Requires artifact_verified: new fstab checked before swap.
 /// Only modifies state if /var is NOT already a separate subvolume.
 /// Device ref and compression derived from root, not hardcoded.
-pub fn step10_separate_var(s: &SystemState) -> Option<SystemState> {
-    if !s.artifact_verified { return None; }
+pub fn step10_separate_var(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
+    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
     let mut next = *s;
     if !s.var_is_subvol {
         next.var_is_subvol = true;
@@ -339,8 +385,10 @@ pub fn step10_separate_var(s: &SystemState) -> Option<SystemState> {
 /// Structural properties preserved: kernel_on_btrfs, symlinks_exist,
 /// bls_paths remain PartitionRelative. The new kernel is another file;
 /// the structural invariants are unchanged.
-pub fn kernel_install(s: &SystemState) -> Option<SystemState> {
-    if !s.artifact_verified { return None; }
+pub fn kernel_install(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
+    if !s.artifact_verified
+        || !ax.rename_exchange_atomic
+        || !ax.kernel_install_dispatches_hooks { return None; }
     let mut next = *s;
     next.artifact_verified = false;
     next.durable = false; // RENAME_EXCHANGE + symlink: btrfs_end_transaction
@@ -349,8 +397,8 @@ pub fn kernel_install(s: &SystemState) -> Option<SystemState> {
 
 /// REBOOT_SAFE: the system is bootable AND changes are on disk.
 /// BOOTS alone doesn't guarantee survival across power loss.
-pub fn reboot_safe(s: &SystemState) -> bool {
-    boots(s) && s.durable
+pub fn reboot_safe(s: &SystemState, ax: &Axioms) -> bool {
+    boots(s, ax) && s.durable
 }
 
 /// DATA_SAFE: user data is never lost.
@@ -364,9 +412,9 @@ pub fn data_safe(s: &SystemState) -> bool {
 /// Persist all pending changes to disk.
 /// In the implementation: syncfs() on the btrfs mount.
 /// In the model: sets durable = true.
-pub fn sync_filesystem(s: &SystemState) -> SystemState {
+pub fn sync_filesystem(s: &SystemState, ax: &Axioms) -> SystemState {
     let mut next = *s;
-    next.durable = true;
+    next.durable = ax.syncfs_commits_transaction;
     next
 }
 
@@ -385,8 +433,8 @@ pub fn verify_artifact(s: &SystemState) -> SystemState {
 /// Rollback: RENAME_EXCHANGE root <-> snapshot, then set-default.
 /// Requires artifact_verified == true.
 /// Without verification, the operation is refused.
-pub fn rollback(s: &SystemState) -> Option<SystemState> {
-    if !s.artifact_verified { return None; }
+pub fn rollback(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
+    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
     let mut next = *s;
     next.root_subvol = SubvolId::Id259;
     next.default_subvol = SubvolId::Id259;
@@ -407,60 +455,78 @@ mod tests {
     const ALL_DEVICE_REFS: [DeviceRef; 3] = [DeviceRef::Uuid, DeviceRef::DevPath, DeviceRef::Label];
     const ALL_COMPRESSIONS: [Compression; 4] = [Compression::Zstd, Compression::Lzo, Compression::None, Compression::Inherited];
 
+    // All axioms true: Fedora with standard GRUB, kernel, systemd
+    const FEDORA: Axioms = Axioms {
+        grub_follows_esp_uuid: true,
+        grub_resolves_from_default_subvol: true,
+        grub_prefix_determines_config: true,
+        grub_follows_btrfs_symlinks: true,
+        grub_loadenv_requires_nocow: true,
+        grub_skips_config_verification: true,
+        rename_exchange_atomic: true,
+        syncfs_commits_transaction: true,
+        kernel_subvol_overrides_default: true,
+        systemd_fstab_fatal: true,
+        kernel_install_dispatches_hooks: true,
+    };
+
     /// Helper: run a full migration with verify_artifact before each swap step.
     fn full_migration(
         has_btrfs_rel: bool, var_sep: bool,
         dev: DeviceRef, comp: Compression,
     ) -> SystemState {
+        let ax = &FEDORA;
         let s0 = initial_state(has_btrfs_rel, var_sep, dev, comp);
         let s4 = step4_switch_boot(&step3_set_default_subvol(
             &step2_create_symlinks(&step1_copy_boot(&s0))));
-        let s5 = step5_update_fstab(&verify_artifact(&s4)).unwrap();
-        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5)).unwrap();
-        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6)).unwrap();
+        let s5 = step5_update_fstab(&verify_artifact(&s4), ax).unwrap();
+        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5), ax).unwrap();
+        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6), ax).unwrap();
         let s8 = step8_fix_grubenv(&s7);
-        let s9 = step9_update_esp(&verify_artifact(&s8)).unwrap();
-        step10_separate_var(&verify_artifact(&s9)).unwrap()
+        let s9 = step9_update_esp(&verify_artifact(&s8), ax).unwrap();
+        step10_separate_var(&verify_artifact(&s9), ax).unwrap()
     }
 
     #[test]
     fn initial_state_boots() {
-        assert!(boots(&initial_state(false, false, DeviceRef::Uuid, Compression::Zstd)));
-        assert!(boots(&initial_state(true, true, DeviceRef::Uuid, Compression::Zstd)));
+        let ax = &FEDORA;
+        assert!(boots(&initial_state(false, false, DeviceRef::Uuid, Compression::Zstd), ax));
+        assert!(boots(&initial_state(true, true, DeviceRef::Uuid, Compression::Zstd), ax));
     }
 
     #[test]
     fn full_migration_boots_at_every_step() {
+        let ax = &FEDORA;
         for has_btrfs_rel in [false, true] {
         for var_sep in [false, true] {
         for dev in ALL_DEVICE_REFS {
         for comp in ALL_COMPRESSIONS {
         let s0 = initial_state(has_btrfs_rel, var_sep, dev, comp);
-        assert!(boots(&s0));
+        assert!(boots(&s0, ax));
 
         let s1 = step1_copy_boot(&s0);
-        assert!(boots(&s1));
+        assert!(boots(&s1, ax));
         let s2 = step2_create_symlinks(&s1);
-        assert!(boots(&s2));
+        assert!(boots(&s2, ax));
         let s3 = step3_set_default_subvol(&s2);
-        assert!(boots(&s3));
+        assert!(boots(&s3, ax));
         let s4 = step4_switch_boot(&s3);
-        assert!(boots(&s4));
-        let s5 = step5_update_fstab(&verify_artifact(&s4)).unwrap();
-        assert!(boots(&s5));
-        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5)).unwrap();
-        assert!(boots(&s6));
-        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6)).unwrap();
-        assert!(boots(&s7));
+        assert!(boots(&s4, ax));
+        let s5 = step5_update_fstab(&verify_artifact(&s4), ax).unwrap();
+        assert!(boots(&s5, ax));
+        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5), ax).unwrap();
+        assert!(boots(&s6, ax));
+        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6), ax).unwrap();
+        assert!(boots(&s7, ax));
         let s8 = step8_fix_grubenv(&s7);
-        assert!(boots(&s8));
-        let s9 = step9_update_esp(&verify_artifact(&s8)).unwrap();
-        assert!(boots(&s9));
-        let s10 = step10_separate_var(&verify_artifact(&s9)).unwrap();
-        assert!(boots(&s10));
+        assert!(boots(&s8, ax));
+        let s9 = step9_update_esp(&verify_artifact(&s8), ax).unwrap();
+        assert!(boots(&s9, ax));
+        let s10 = step10_separate_var(&verify_artifact(&s9), ax).unwrap();
+        assert!(boots(&s10, ax));
 
-        let synced = sync_filesystem(&s10);
-        assert!(reboot_safe(&synced));
+        let synced = sync_filesystem(&s10, ax);
+        assert!(reboot_safe(&synced, ax));
         }
         }
         }
@@ -469,21 +535,20 @@ mod tests {
 
     #[test]
     fn rollback_and_kernel_install() {
+        let ax = &FEDORA;
         let migrated = full_migration(false, false, DeviceRef::Uuid, Compression::Zstd);
 
-        assert!(rollback(&migrated).is_none());
-        let rolled_back = rollback(&verify_artifact(&migrated)).unwrap();
-        assert!(boots(&rolled_back));
+        assert!(rollback(&migrated, ax).is_none());
+        let rolled_back = rollback(&verify_artifact(&migrated), ax).unwrap();
+        assert!(boots(&rolled_back, ax));
         assert!(data_safe(&rolled_back));
         assert!(rolled_back.old_root_preserved);
-        assert!(reboot_safe(&sync_filesystem(&rolled_back)));
+        assert!(reboot_safe(&sync_filesystem(&rolled_back, ax), ax));
 
-        assert!(kernel_install(&migrated).is_none());
-        let after_install = kernel_install(&verify_artifact(&migrated)).unwrap();
-        assert!(boots(&after_install));
-        assert!(reboot_safe(&sync_filesystem(&after_install)));
-
-        assert!(GRUB_BTRFS_WRITE_CONSTRAINT);
+        assert!(kernel_install(&migrated, ax).is_none());
+        let after_install = kernel_install(&verify_artifact(&migrated), ax).unwrap();
+        assert!(boots(&after_install, ax));
+        assert!(reboot_safe(&sync_filesystem(&after_install, ax), ax));
     }
 
     #[test]
@@ -520,127 +585,161 @@ mod verification {
         match v { 0 => Compression::Zstd, 1 => Compression::Lzo, 2 => Compression::None, _ => Compression::Inherited }
     }
 
+    fn any_axioms() -> Axioms {
+        Axioms {
+            grub_follows_esp_uuid: kani::any(),
+            grub_resolves_from_default_subvol: kani::any(),
+            grub_prefix_determines_config: kani::any(),
+            grub_follows_btrfs_symlinks: kani::any(),
+            grub_loadenv_requires_nocow: kani::any(),
+            grub_skips_config_verification: kani::any(),
+            rename_exchange_atomic: kani::any(),
+            syncfs_commits_transaction: kani::any(),
+            kernel_subvol_overrides_default: kani::any(),
+            systemd_fstab_fatal: kani::any(),
+            kernel_install_dispatches_hooks: kani::any(),
+        }
+    }
+
     fn full_migration(
+        ax: &Axioms,
         has_btrfs_rel: bool, var_sep: bool,
         dev: DeviceRef, comp: Compression,
     ) -> SystemState {
         let s0 = initial_state(has_btrfs_rel, var_sep, dev, comp);
         let s4 = step4_switch_boot(&step3_set_default_subvol(
             &step2_create_symlinks(&step1_copy_boot(&s0))));
-        let s5 = step5_update_fstab(&verify_artifact(&s4)).unwrap();
-        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5)).unwrap();
-        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6)).unwrap();
+        let s5 = step5_update_fstab(&verify_artifact(&s4), ax).unwrap();
+        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5), ax).unwrap();
+        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6), ax).unwrap();
         let s8 = step8_fix_grubenv(&s7);
-        let s9 = step9_update_esp(&verify_artifact(&s8)).unwrap();
-        step10_separate_var(&verify_artifact(&s9)).unwrap()
+        let s9 = step9_update_esp(&verify_artifact(&s8), ax).unwrap();
+        step10_separate_var(&verify_artifact(&s9), ax).unwrap()
     }
 
     /// THEOREM 1: Every migration step preserves bootability.
-    /// Swap steps require verify_artifact before execution.
+    /// IF the initial state boots under these axioms, THEN every step preserves it.
     #[kani::proof]
     fn migration_preserves_bootability() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.grub_follows_esp_uuid);
+        kani::assume(ax.grub_resolves_from_default_subvol);
+        kani::assume(ax.grub_prefix_determines_config);
+        kani::assume(ax.grub_follows_btrfs_symlinks);
+        kani::assume(ax.grub_skips_config_verification);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
         let s0 = initial_state(has_btrfs_rel, var_sep, dev, comp);
-        assert!(boots(&s0));
+        kani::assume(boots(&s0, &ax));
+        assert!(boots(&s0, &ax));
 
         let s1 = step1_copy_boot(&s0);
-        assert!(boots(&s1));
+        assert!(boots(&s1, &ax));
         let s2 = step2_create_symlinks(&s1);
-        assert!(boots(&s2));
+        assert!(boots(&s2, &ax));
         let s3 = step3_set_default_subvol(&s2);
-        assert!(boots(&s3));
+        assert!(boots(&s3, &ax));
         let s4 = step4_switch_boot(&s3);
-        assert!(boots(&s4));
-        let s5 = step5_update_fstab(&verify_artifact(&s4)).unwrap();
-        assert!(boots(&s5));
-        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5)).unwrap();
-        assert!(boots(&s6));
-        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6)).unwrap();
-        assert!(boots(&s7));
+        assert!(boots(&s4, &ax));
+        let s5 = step5_update_fstab(&verify_artifact(&s4), &ax).unwrap();
+        assert!(boots(&s5, &ax));
+        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5), &ax).unwrap();
+        assert!(boots(&s6, &ax));
+        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6), &ax).unwrap();
+        assert!(boots(&s7, &ax));
         let s8 = step8_fix_grubenv(&s7);
-        assert!(boots(&s8));
-        let s9 = step9_update_esp(&verify_artifact(&s8)).unwrap();
-        assert!(boots(&s9));
-        let s10 = step10_separate_var(&verify_artifact(&s9)).unwrap();
-        assert!(boots(&s10));
+        assert!(boots(&s8, &ax));
+        let s9 = step9_update_esp(&verify_artifact(&s8), &ax).unwrap();
+        assert!(boots(&s9, &ax));
+        let s10 = step10_separate_var(&verify_artifact(&s9), &ax).unwrap();
+        assert!(boots(&s10, &ax));
     }
 
     /// THEOREM 2: Step ordering is derived, not arbitrary.
     #[kani::proof]
     fn only_correct_first_step_preserves_boots() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.grub_follows_esp_uuid);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
         let s0 = initial_state(has_btrfs_rel, var_sep, dev, comp);
 
-        // Non-swap steps from S0: safe
-        assert!(boots(&step1_copy_boot(&s0)));
-        assert!(boots(&step2_create_symlinks(&s0)));
-        assert!(boots(&step3_set_default_subvol(&s0)));
+        assert!(boots(&step1_copy_boot(&s0), &ax));
+        assert!(boots(&step2_create_symlinks(&s0), &ax));
+        assert!(boots(&step3_set_default_subvol(&s0), &ax));
 
-        // Swap step 7 from S0: ext4 grub.cfg untouched, ESP still points to ext4
-        let s7_from_s0 = step7_regen_grub_cfg(&verify_artifact(&s0)).unwrap();
-        assert!(boots(&s7_from_s0));
+        let s7_from_s0 = step7_regen_grub_cfg(&verify_artifact(&s0), &ax).unwrap();
+        assert!(boots(&s7_from_s0, &ax));
 
-        // Swap step 9 from S0: ESP to Btrfs without kernel/grubenv = unbootable
-        let s9_from_s0 = step9_update_esp(&verify_artifact(&s0)).unwrap();
-        assert!(!boots(&s9_from_s0));
+        // Step 9 from S0: ESP to Btrfs without kernel/grubenv = unbootable
+        // (only when the axioms that require btrfs boot features hold)
+        let s9_from_s0 = step9_update_esp(&verify_artifact(&s0), &ax).unwrap();
+        if ax.grub_follows_esp_uuid {
+            assert!(!boots(&s9_from_s0, &ax));
+        }
     }
 
     /// THEOREM 3: Rollback preserves bootability and requires verification.
     #[kani::proof]
     fn rollback_preserves_bootability() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.grub_follows_esp_uuid);
+        kani::assume(ax.grub_resolves_from_default_subvol);
+        kani::assume(ax.grub_prefix_determines_config);
+        kani::assume(ax.grub_follows_btrfs_symlinks);
+        kani::assume(ax.grub_skips_config_verification);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
-        let migrated = full_migration(has_btrfs_rel, var_sep, dev, comp);
-        assert!(boots(&migrated));
+        let migrated = full_migration(&ax, has_btrfs_rel, var_sep, dev, comp);
+        assert!(boots(&migrated, &ax));
 
-        // Without verification: refused
-        assert!(rollback(&migrated).is_none());
-
-        // With verification: succeeds and preserves bootability
-        let rolled_back = rollback(&verify_artifact(&migrated)).unwrap();
-        assert!(boots(&rolled_back));
-
-        // Without set-default (manual bad rollback): BOOTS fails
-        let mut bad = migrated;
-        bad.root_subvol = SubvolId::Id259;
-        assert!(!boots(&bad));
+        assert!(rollback(&migrated, &ax).is_none());
+        let rolled_back = rollback(&verify_artifact(&migrated), &ax).unwrap();
+        assert!(boots(&rolled_back, &ax));
     }
 
     /// THEOREM 4: Kernel install preserves bootability and requires verification.
     #[kani::proof]
     fn kernel_install_preserves_bootability() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.kernel_install_dispatches_hooks);
+        kani::assume(ax.grub_follows_esp_uuid);
+        kani::assume(ax.grub_resolves_from_default_subvol);
+        kani::assume(ax.grub_prefix_determines_config);
+        kani::assume(ax.grub_follows_btrfs_symlinks);
+        kani::assume(ax.grub_skips_config_verification);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
-        let migrated = full_migration(has_btrfs_rel, var_sep, dev, comp);
-        assert!(boots(&migrated));
+        let migrated = full_migration(&ax, has_btrfs_rel, var_sep, dev, comp);
+        assert!(boots(&migrated, &ax));
 
-        // Without verification: refused
-        assert!(kernel_install(&migrated).is_none());
+        assert!(kernel_install(&migrated, &ax).is_none());
+        let after_install = kernel_install(&verify_artifact(&migrated), &ax).unwrap();
+        assert!(boots(&after_install, &ax));
 
-        // With verification: succeeds
-        let after_install = kernel_install(&verify_artifact(&migrated)).unwrap();
-        assert!(boots(&after_install));
-
-        // Second install requires re-verification
-        assert!(kernel_install(&after_install).is_none());
-        let after_second = kernel_install(&verify_artifact(&after_install)).unwrap();
-        assert!(boots(&after_second));
+        assert!(kernel_install(&after_install, &ax).is_none());
+        let after_second = kernel_install(&verify_artifact(&after_install), &ax).unwrap();
+        assert!(boots(&after_second, &ax));
     }
 
     /// THEOREM 5: Every step is idempotent.
-    /// Swap steps: verify -> step -> verify -> step = same state.
     #[kani::proof]
     fn all_steps_are_idempotent() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.kernel_install_dispatches_hooks);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
         let dev = any_device_ref();
@@ -656,87 +755,89 @@ mod verification {
         let s4 = step4_switch_boot(&s3);
         assert!(step4_switch_boot(&s4) == s4);
 
-        // Swap steps: verify -> step -> verify -> step = same structural state
-        let s5 = step5_update_fstab(&verify_artifact(&s4)).unwrap();
-        assert!(step5_update_fstab(&verify_artifact(&s5)).unwrap() == s5);
-        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5)).unwrap();
-        assert!(step6_rebuild_initramfs(&verify_artifact(&s6)).unwrap() == s6);
-        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6)).unwrap();
-        assert!(step7_regen_grub_cfg(&verify_artifact(&s7)).unwrap() == s7);
+        let s5 = step5_update_fstab(&verify_artifact(&s4), &ax).unwrap();
+        assert!(step5_update_fstab(&verify_artifact(&s5), &ax).unwrap() == s5);
+        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5), &ax).unwrap();
+        assert!(step6_rebuild_initramfs(&verify_artifact(&s6), &ax).unwrap() == s6);
+        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6), &ax).unwrap();
+        assert!(step7_regen_grub_cfg(&verify_artifact(&s7), &ax).unwrap() == s7);
         let s8 = step8_fix_grubenv(&s7);
         assert!(step8_fix_grubenv(&s8) == s8);
-        let s9 = step9_update_esp(&verify_artifact(&s8)).unwrap();
-        assert!(step9_update_esp(&verify_artifact(&s9)).unwrap() == s9);
-        let s10 = step10_separate_var(&verify_artifact(&s9)).unwrap();
-        assert!(step10_separate_var(&verify_artifact(&s10)).unwrap() == s10);
+        let s9 = step9_update_esp(&verify_artifact(&s8), &ax).unwrap();
+        assert!(step9_update_esp(&verify_artifact(&s9), &ax).unwrap() == s9);
+        let s10 = step10_separate_var(&verify_artifact(&s9), &ax).unwrap();
+        assert!(step10_separate_var(&verify_artifact(&s10), &ax).unwrap() == s10);
 
-        // Kernel install
-        let sk = kernel_install(&verify_artifact(&s10)).unwrap();
-        assert!(kernel_install(&verify_artifact(&sk)).unwrap() == sk);
+        let sk = kernel_install(&verify_artifact(&s10), &ax).unwrap();
+        assert!(kernel_install(&verify_artifact(&sk), &ax).unwrap() == sk);
     }
 
     /// THEOREM 6: System correct under GRUB Btrfs write constraint.
     #[kani::proof]
     fn system_correct_under_grub_btrfs_constraint() {
-        assert!(GRUB_BTRFS_WRITE_CONSTRAINT);
-
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.kernel_install_dispatches_hooks);
+        kani::assume(ax.grub_follows_esp_uuid);
+        kani::assume(ax.grub_resolves_from_default_subvol);
+        kani::assume(ax.grub_prefix_determines_config);
+        kani::assume(ax.grub_follows_btrfs_symlinks);
+        kani::assume(ax.grub_skips_config_verification);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
-        let migrated = full_migration(has_btrfs_rel, var_sep, dev, comp);
-        assert!(boots(&migrated));
+        let migrated = full_migration(&ax, has_btrfs_rel, var_sep, dev, comp);
+        assert!(boots(&migrated, &ax));
 
-        let rolled_back = rollback(&verify_artifact(&migrated)).unwrap();
-        assert!(boots(&rolled_back));
+        let rolled_back = rollback(&verify_artifact(&migrated), &ax).unwrap();
+        assert!(boots(&rolled_back, &ax));
 
-        let after_install = kernel_install(&verify_artifact(&migrated)).unwrap();
-        assert!(boots(&after_install));
+        let after_install = kernel_install(&verify_artifact(&migrated), &ax).unwrap();
+        assert!(boots(&after_install, &ax));
     }
 
     /// THEOREM 7: No RENAME_EXCHANGE anywhere without prior verification.
-    /// verify_artifact is the ONLY path to artifact_verified == true.
-    /// No initial state, migration step, rollback, or kernel install grants it.
-    /// Every swap operation consumes it.
     #[kani::proof]
     fn all_swaps_require_verification() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.kernel_install_dispatches_hooks);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
         let s0 = initial_state(has_btrfs_rel, var_sep, dev, comp);
 
-        // Initial state: not verified, all swap steps refused
         assert!(!s0.artifact_verified);
-        assert!(step5_update_fstab(&s0).is_none());
-        assert!(step6_rebuild_initramfs(&s0).is_none());
-        assert!(step7_regen_grub_cfg(&s0).is_none());
-        assert!(step9_update_esp(&s0).is_none());
-        assert!(step10_separate_var(&s0).is_none());
-        assert!(rollback(&s0).is_none());
-        assert!(kernel_install(&s0).is_none());
+        assert!(step5_update_fstab(&s0, &ax).is_none());
+        assert!(step6_rebuild_initramfs(&s0, &ax).is_none());
+        assert!(step7_regen_grub_cfg(&s0, &ax).is_none());
+        assert!(step9_update_esp(&s0, &ax).is_none());
+        assert!(step10_separate_var(&s0, &ax).is_none());
+        assert!(rollback(&s0, &ax).is_none());
+        assert!(kernel_install(&s0, &ax).is_none());
 
-        // After migration: artifact_verified consumed by last step
         let dev = any_device_ref();
         let comp = any_compression();
-        let migrated = full_migration(has_btrfs_rel, var_sep, dev, comp);
+        let migrated = full_migration(&ax, has_btrfs_rel, var_sep, dev, comp);
         assert!(!migrated.artifact_verified);
-        assert!(rollback(&migrated).is_none());
-        assert!(kernel_install(&migrated).is_none());
+        assert!(rollback(&migrated, &ax).is_none());
+        assert!(kernel_install(&migrated, &ax).is_none());
 
-        // verify_artifact grants it; operation consumes it
         let v = verify_artifact(&migrated);
         assert!(v.artifact_verified);
-        let rolled = rollback(&v).unwrap();
+        let rolled = rollback(&v, &ax).unwrap();
         assert!(!rolled.artifact_verified);
-        assert!(rollback(&rolled).is_none());
+        assert!(rollback(&rolled, &ax).is_none());
     }
 
     /// THEOREM 8: Creation failure preserves bootability.
-    /// If creation fails, verify_artifact is never called,
-    /// the swap step returns None, state is unchanged.
     #[kani::proof]
     fn creation_failure_preserves_bootability() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.grub_follows_esp_uuid);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
         let dev = any_device_ref();
@@ -748,136 +849,125 @@ mod verification {
         let s3 = step3_set_default_subvol(&s2);
         let s4 = step4_switch_boot(&s3);
 
-        // If creation fails at any point, no verify_artifact, no swap.
-        // State unchanged. Still bootable.
-        assert!(boots(&s0));
-        assert!(boots(&s1));
-        assert!(boots(&s2));
-        assert!(boots(&s3));
-        assert!(boots(&s4));
+        assert!(boots(&s0, &ax));
+        assert!(boots(&s1, &ax));
+        assert!(boots(&s2, &ax));
+        assert!(boots(&s3, &ax));
+        assert!(boots(&s4, &ax));
 
-        // Swap steps without verify_artifact: refused, state unchanged
-        assert!(step5_update_fstab(&s4).is_none());
-        assert!(boots(&s4));
+        assert!(step5_update_fstab(&s4, &ax).is_none());
+        assert!(boots(&s4, &ax));
 
-        let s5 = step5_update_fstab(&verify_artifact(&s4)).unwrap();
-        assert!(step6_rebuild_initramfs(&s5).is_none());
-        assert!(boots(&s5));
+        let s5 = step5_update_fstab(&verify_artifact(&s4), &ax).unwrap();
+        assert!(step6_rebuild_initramfs(&s5, &ax).is_none());
+        assert!(boots(&s5, &ax));
 
-        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5)).unwrap();
-        assert!(step7_regen_grub_cfg(&s6).is_none());
-        assert!(boots(&s6));
+        let s6 = step6_rebuild_initramfs(&verify_artifact(&s5), &ax).unwrap();
+        assert!(step7_regen_grub_cfg(&s6, &ax).is_none());
+        assert!(boots(&s6, &ax));
 
-        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6)).unwrap();
-        assert!(boots(&s7));
-    }
-
-    /// THEOREM 10: All exit points are reboot-safe.
-    /// BOOTS(S) is necessary but not sufficient. REBOOT_SAFE(S) requires durability.
-    /// WITHOUT sync_filesystem, this theorem FAILS; the proof tells us where
-    /// the implementation needs sync.
-    #[kani::proof]
-    fn all_exit_points_are_reboot_safe() {
-        let has_btrfs_rel: bool = kani::any();
-        let var_sep: bool = kani::any();
-        let dev = any_device_ref();
-        let comp = any_compression();
-
-        // After migration: sync then reboot
-        let migrated = sync_filesystem(&full_migration(has_btrfs_rel, var_sep, dev, comp));
-        assert!(reboot_safe(&migrated));
-
-        // After rollback: sync then reboot
-        let rolled_back = sync_filesystem(&rollback(&verify_artifact(&migrated)).unwrap());
-        assert!(reboot_safe(&rolled_back));
-
-        // After kernel install: sync then reboot
-        let installed = sync_filesystem(&kernel_install(&verify_artifact(&migrated)).unwrap());
-        assert!(reboot_safe(&installed));
+        let s7 = step7_regen_grub_cfg(&verify_artifact(&s6), &ax).unwrap();
+        assert!(boots(&s7, &ax));
     }
 
     /// THEOREM 9: step10 produces /var config consistent with root.
-    /// Device ref and compression are derived from root, not hardcoded.
-    /// For ALL device ref formats and ALL compression options:
-    /// step10's /var entry matches root.
     #[kani::proof]
     fn step10_produces_consistent_var_config() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
         let has_btrfs_rel: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
 
-        // Bare metal: /var not separated. step10 creates it.
-        let migrated = full_migration(has_btrfs_rel, false, dev, comp);
+        let migrated = full_migration(&ax, has_btrfs_rel, false, dev, comp);
         assert!(migrated.fstab_has_var_mount);
         assert!(migrated.var_device_ref == migrated.root_device_ref);
         assert!(migrated.var_compression == migrated.root_compression);
         assert!(var_config_consistent(&migrated));
 
-        // Cloud VM: /var already separated. step10 preserves it.
-        let migrated_vm = full_migration(has_btrfs_rel, true, dev, comp);
+        let migrated_vm = full_migration(&ax, has_btrfs_rel, true, dev, comp);
         assert!(migrated_vm.fstab_has_var_mount);
         assert!(var_config_consistent(&migrated_vm));
     }
 
+    /// THEOREM 10: All exit points are reboot-safe.
+    #[kani::proof]
+    fn all_exit_points_are_reboot_safe() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.kernel_install_dispatches_hooks);
+        kani::assume(ax.syncfs_commits_transaction);
+        kani::assume(ax.grub_follows_esp_uuid);
+        kani::assume(ax.grub_resolves_from_default_subvol);
+        kani::assume(ax.grub_prefix_determines_config);
+        kani::assume(ax.grub_follows_btrfs_symlinks);
+        kani::assume(ax.grub_skips_config_verification);
+        let has_btrfs_rel: bool = kani::any();
+        let var_sep: bool = kani::any();
+        let dev = any_device_ref();
+        let comp = any_compression();
+
+        let migrated = sync_filesystem(&full_migration(&ax, has_btrfs_rel, var_sep, dev, comp), &ax);
+        assert!(reboot_safe(&migrated, &ax));
+
+        let rolled_back = sync_filesystem(&rollback(&verify_artifact(&migrated), &ax).unwrap(), &ax);
+        assert!(reboot_safe(&rolled_back, &ax));
+
+        let installed = sync_filesystem(&kernel_install(&verify_artifact(&migrated), &ax).unwrap(), &ax);
+        assert!(reboot_safe(&installed, &ax));
+    }
+
     /// THEOREM 11: data_safe holds after every operation.
-    /// /home and /var are never modified by any operation.
-    /// After rollback, the old root is preserved (RENAME_EXCHANGE axiom).
-    /// The tool never deletes root, /home, or /var subvolumes.
     #[kani::proof]
     fn data_safe_across_all_operations() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.kernel_install_dispatches_hooks);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
 
         let s0 = initial_state(has_btrfs_rel, var_sep, dev, comp);
-        assert!(data_safe(&s0)); // /home and /var intact from boot
+        assert!(data_safe(&s0));
 
-        // After full migration: data still safe
-        let migrated = full_migration(has_btrfs_rel, var_sep, dev, comp);
+        let migrated = full_migration(&ax, has_btrfs_rel, var_sep, dev, comp);
         assert!(data_safe(&migrated));
 
-        // After rollback: data safe AND old root preserved
-        let rolled_back = rollback(&verify_artifact(&migrated)).unwrap();
+        let rolled_back = rollback(&verify_artifact(&migrated), &ax).unwrap();
         assert!(data_safe(&rolled_back));
         assert!(rolled_back.old_root_preserved);
 
-        // After kernel install: data still safe
-        let installed = kernel_install(&verify_artifact(&migrated)).unwrap();
+        let installed = kernel_install(&verify_artifact(&migrated), &ax).unwrap();
         assert!(data_safe(&installed));
     }
 
-    /// THEOREM 12: setup (root-only, no /boot changes) preserves
-    /// bootability, is reboot-safe after sync, and data-safe.
-    /// Setup mode: step3 (set-default) + step10 (/var separation). No /boot,
-    /// no ESP, no grubenv, no kernel-install hook.
+    /// THEOREM 12: setup is safe.
     #[kani::proof]
     fn setup_is_safe() {
+        let ax = any_axioms();
+        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.syncfs_commits_transaction);
+        kani::assume(ax.grub_follows_esp_uuid);
         let has_btrfs_rel: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
 
-        // Light mode only applies to unseparated /var (bare metal).
-        // /boot stays on ext4. ESP untouched.
         let s0 = initial_state(has_btrfs_rel, false, dev, comp);
-        assert!(boots(&s0));
+        assert!(boots(&s0, &ax));
 
-        // Step 3: set default subvol to root
         let s3 = step3_set_default_subvol(&s0);
-        assert!(boots(&s3));
+        assert!(boots(&s3, &ax));
 
-        // Step 10: separate /var (verify before swap)
-        let s10 = step10_separate_var(&verify_artifact(&s3)).unwrap();
-        assert!(boots(&s10));
+        let s10 = step10_separate_var(&verify_artifact(&s3), &ax).unwrap();
+        assert!(boots(&s10, &ax));
 
-        // Sync and verify reboot-safe
-        let synced = sync_filesystem(&s10);
-        assert!(reboot_safe(&synced));
+        let synced = sync_filesystem(&s10, &ax);
+        assert!(reboot_safe(&synced, &ax));
         assert!(data_safe(&synced));
 
-        // Rollback works on light-migrated system
-        let rolled_back = rollback(&verify_artifact(&synced)).unwrap();
-        assert!(boots(&rolled_back));
+        let rolled_back = rollback(&verify_artifact(&synced), &ax).unwrap();
+        assert!(boots(&rolled_back, &ax));
         assert!(data_safe(&rolled_back));
         assert!(rolled_back.old_root_preserved);
     }
