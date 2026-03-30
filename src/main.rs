@@ -50,12 +50,47 @@ fn main() {
             }
         }
         Some("snapshot") => {
-            let name = args.get(2).map(|s| s.as_str());
-            match snapshot::snapshot(name) {
-                Ok(name) => eprintln!("Snapshot '{name}' created."),
-                Err(e) => {
-                    eprintln!("Snapshot failed: {e}");
-                    std::process::exit(1);
+            let sub = args.get(2).map(|s| s.as_str());
+            match sub {
+                Some("list") => {
+                    match snapshot::list() {
+                        Ok(names) => {
+                            if names.is_empty() {
+                                eprintln!("No snapshots found.");
+                            } else {
+                                for name in &names {
+                                    println!("{name}");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Snapshot list failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Some("delete") => {
+                    let name = args.get(3).map(|s| s.as_str()).unwrap_or("");
+                    if name.is_empty() {
+                        eprintln!("Usage: atomic-rollback snapshot delete <name>");
+                        std::process::exit(2);
+                    }
+                    match snapshot::delete(name) {
+                        Ok(()) => eprintln!("Deleted snapshot '{name}'."),
+                        Err(e) => {
+                            eprintln!("Snapshot delete failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ => {
+                    match snapshot::snapshot(sub) {
+                        Ok(name) => eprintln!("Snapshot '{name}' created."),
+                        Err(e) => {
+                            eprintln!("Snapshot failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
         }
@@ -87,6 +122,8 @@ fn main() {
             eprintln!("  atomic-rollback setup               separate /var, enable snapshots and rollback");
             eprintln!("  atomic-rollback migrate             full boot migration for complete kernel rollback");
             eprintln!("  atomic-rollback snapshot [name]     create a snapshot before updating");
+            eprintln!("  atomic-rollback snapshot list       show available snapshots");
+            eprintln!("  atomic-rollback snapshot delete N   delete a snapshot by name");
             eprintln!("  atomic-rollback rollback [name]     roll back to a snapshot");
             std::process::exit(2);
         }
