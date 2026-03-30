@@ -102,7 +102,7 @@ The bootability check (`atomic-rollback check`) evaluates a predicate derived fr
 
 ## Verification
 
-The migration state machine is formally verified using [Kani](https://github.com/model-checking/kani). Nine theorems are machine-checked:
+The migration state machine is formally verified using [Kani](https://github.com/model-checking/kani). Eleven theorems are machine-checked:
 
 1. Migration preserves bootability at every step.
 2. Rollback preserves bootability (and fails without updating the default subvolume).
@@ -113,6 +113,8 @@ The migration state machine is formally verified using [Kani](https://github.com
 7. Non-atomic creation by external tools (dracut, grub2-mkconfig) is safe because the verification gate prevents the atomic swap from firing on a failed creation.
 8. Every RENAME_EXCHANGE in the tool (migration, rollback, kernel install) requires prior artifact verification. No swap proceeds without it.
 9. /var separation produces consistent config: device reference format and compression options match the root mount entry, for all valid initial configurations.
+10. Every exit point (migration, rollback, kernel hook) is both bootable AND durable. `syncfs` forces the Btrfs transaction to disk before the user reboots. Derived from kernel source: `RENAME_EXCHANGE` and `set-default` use `btrfs_end_transaction` (in-memory only), not `btrfs_commit_transaction` (on-disk).
+11. User data is never lost. /home and /var are separate subvolumes, untouched by any swap. After rollback, the old root is preserved at the snapshot name. No operation in the tool deletes root, /home, or /var.
 
 The proofs are parameterized over all valid initial states: Cloud VM and bare metal, with and without separate /var, across all fstab device reference formats (UUID=, /dev/, LABEL=) and compression options (zstd, lzo, none). The source is in `src/proof.rs`.
 
