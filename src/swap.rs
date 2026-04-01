@@ -2,12 +2,13 @@ use std::ffi::CString;
 use std::os::fd::AsRawFd;
 use std::path::Path;
 
-const SYS_RENAMEAT2: libc::c_long = 316;
-const RENAME_EXCHANGE: libc::c_uint = 2;
-
-/// Atomically swap two filesystem entries within the same directory.
-/// Uses renameat2(RENAME_EXCHANGE), a single syscall.
-/// Either both names swap or neither does. No intermediate state.
+/// Swap two filesystem entries within the same directory.
+/// Uses renameat2(RENAME_EXCHANGE).
+/// On btrfs: single transaction (fs/btrfs/inode.c:8276).
+/// On vfat: two separate directory entry writes
+/// (fs/fat/namei_vfat.c:1097-1100). Each write is a complete
+/// 32-byte entry (fs/fat/inode.c:887-906), so partial power
+/// loss produces entries with consistent size and cluster fields.
 pub fn atomic_swap(dir: &Path, a: &str, b: &str) -> Result<(), String> {
     let dir_fd = std::fs::File::open(dir)
         .map_err(|e| format!("open {}: {e}", dir.display()))?;
@@ -17,12 +18,12 @@ pub fn atomic_swap(dir: &Path, a: &str, b: &str) -> Result<(), String> {
 
     let ret = unsafe {
         libc::syscall(
-            SYS_RENAMEAT2,
+            libc::SYS_renameat2,
             dir_fd.as_raw_fd(),
             a.as_ptr(),
             dir_fd.as_raw_fd(),
             b.as_ptr(),
-            RENAME_EXCHANGE,
+            libc::RENAME_EXCHANGE,
         )
     };
 
