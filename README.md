@@ -69,7 +69,7 @@ The Btrfs default subvolume is set to match the root subvolume. GRUB resolves fi
 
 Symlinks are created at / for each kernel. `/vmlinuz-6.x` points to `boot/vmlinuz-6.x`. This allows GRUB to find kernels using the same path regardless of the boot layout.
 
-The ESP grub.cfg is updated. The UUID changes from the ext4 partition to the Btrfs partition. `btrfs_relative_path` is added if not already present. All other content (variable names, flags, structure) is preserved from the original.
+The ESP grub.cfg is updated. The UUID changes from the ext4 partition to the Btrfs partition. `btrfs_relative_path` is added. The stub is regenerated from the same template as `gen_grub_cfgstub` (the tool that created the original).
 
 The /boot/grub2 directory is set to NOCOW (chattr +C) and grubenv is recreated. GRUB's Btrfs driver cannot read compressed or inline extents. On Btrfs with zstd compression, grubenv gets compressed by default. NOCOW on the directory ensures all files created there (including by grub2-editenv) are stored as flat extents GRUB can read.
 

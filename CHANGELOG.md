@@ -2,6 +2,20 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.3.2] - 2026-04-01
+
+### Fixed
+
+- Subvolume names with spaces now parse correctly. The btrfs output parser used whitespace splitting which truncated paths containing spaces.
+- Verification chain now handles all fstab device formats (PARTUUID=, PARTLABEL=, ID=). Previously only UUID= entries were verified; other formats silently passed without checking.
+- BLS initrd validation checks all initrd lines. The verified parser previously returned only the first match; entries with multiple initrd lines had subsequent lines unchecked.
+- BLS root= parameter check accepts all kernel device formats (PARTUUID=, PARTLABEL=, /dev/). Previously only root=UUID= and root=/dev/ were accepted.
+- ESP grub.cfg migration renders from the generator template instead of line surgery, eliminating the double-prefix bug class by construction.
+
+### Changed
+
+- Internal architecture: all external tool output parsed through grammar-derived types at the boundary. Filesystem type comparisons use an enum instead of string matching.
+
 ## [0.3.1] - 2026-03-31
 
 ### Fixed
