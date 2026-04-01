@@ -1,8 +1,8 @@
-/// Formal model of the migration state machine.
-/// No I/O, no strings, no filesystem. Pure state transitions.
-/// Kani exhausts this in seconds.
+//! State machine model of the migration and rollback operations.
+//! Each function is a pure state transition. Kani verifies theorems
+//! over all valid initial states and axiom combinations.
+//! This model is only as accurate as its mapping to the real boot chain.
 
-/// System state: which components exist and what they point to.
 #[derive(Clone, Copy, PartialEq)]
 pub struct SystemState {
     // ESP grub.cfg points to this UUID
@@ -29,7 +29,7 @@ pub struct SystemState {
     pub var_is_subvol: bool,
     // fstab has a btrfs /var mount entry
     pub fstab_has_var_mount: bool,
-    // How fstab references the root device (UUID=, /dev/, LABEL=)
+    // How fstab references the root device (see DeviceRef for scope)
     pub root_device_ref: DeviceRef,
     // Root filesystem compression option
     pub root_compression: Compression,
@@ -77,21 +77,28 @@ pub enum PathScheme {
     PartitionRelative,
 }
 
+/// Abstract subvolume identity. Two distinct values so the model can
+/// distinguish "root points to the original" vs "root points to the snapshot."
+/// The numbers 256/259 match a typical Fedora install but the model only
+/// cares about equality, not the numeric value.
 #[derive(Clone, Copy, PartialEq)]
 pub enum SubvolId { Id256, Id259 }
 
-/// How fstab references a block device.
+/// Fstab device reference formats modeled by this tool.
+/// fstab(5) also allows PARTUUID= and PARTLABEL= which are not handled.
 #[derive(Clone, Copy, PartialEq)]
 pub enum DeviceRef { Uuid, DevPath, Label }
 
 /// Compression option in fstab mount options.
+/// Inherited: no explicit compress= in fstab; filesystem default applies.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Compression { Zstd, Lzo, None, Inherited }
 
 // --- Axioms: interface assumptions about the boot chain ---
 // Each axiom is a property of an interface between our tool and an
 // external component. Kani explores all combinations.
-// Source references in docs/plans/axiom-parameterization.md.
+// Source references are in the code that implements each interface,
+// not repeated here. See the doc comment on each axiom for scope.
 #[derive(Clone, Copy)]
 pub struct Axioms {
     // GRUB follows search --fs-uuid in ESP grub.cfg
@@ -114,7 +121,8 @@ pub struct Axioms {
     pub syncfs_commits_transaction: bool,
     // kernel mounts subvol= from cmdline, ignoring default subvol ID
     pub kernel_subvol_overrides_default: bool,
-    // systemd treats fstab mount failures as fatal (no nofail)
+    // systemd treats fstab mount failures as fatal (no nofail).
+    // Source not yet verified from systemd fstab-generator.
     pub systemd_fstab_fatal: bool,
     // systemd kernel-install dispatches to install.d plugins
     pub kernel_install_dispatches_hooks: bool,
@@ -125,10 +133,11 @@ pub struct Axioms {
 /// Derived from the boot chain:
 ///   UEFI -> shim -> GRUB -> grub.cfg -> blscfg -> BLS entry -> kernel -> initrd -> root mount
 ///
-/// Each conjunct is guarded by the axiom it depends on. When an axiom
-/// is false, the effect depends on the axiom category:
-/// - Required for btrfs boot (1-4): conjunct becomes false
-/// - Relaxes a check (5-6, 13): conjunct becomes true (check unnecessary)
+/// Each conjunct is guarded by the axiom it depends on.
+/// Axioms required for btrfs boot (grub_follows_*, grub_skips_*)
+/// make their conjunct false when negated. Axioms that relax a check
+/// (grub_loadenv_requires_nocow, systemd_fstab_fatal) make their
+/// conjunct true when negated.
 pub fn boots(s: &SystemState, ax: &Axioms) -> bool {
     // ESP grub.cfg must point to a filesystem that has grub.cfg
     let esp_finds_grub_cfg = if ax.grub_follows_esp_uuid {
@@ -413,7 +422,7 @@ pub fn data_safe(s: &SystemState) -> bool {
 
 /// Persist all pending changes to disk.
 /// In the implementation: syncfs() on the btrfs mount.
-/// In the model: sets durable = true.
+/// In the model: sets durable = syncfs_commits_transaction axiom.
 pub fn sync_filesystem(s: &SystemState, ax: &Axioms) -> SystemState {
     let mut next = *s;
     next.durable = ax.syncfs_commits_transaction;
@@ -829,8 +838,6 @@ mod verification {
         assert!(rollback(&s0, &ax).is_none());
         assert!(kernel_install(&s0, &ax).is_none());
 
-        let dev = any_device_ref();
-        let comp = any_compression();
         let migrated = full_migration(&ax, has_btrfs_rel, var_sep, dev, comp);
         assert!(!migrated.artifact_verified);
         assert!(rollback(&migrated, &ax).is_none());

@@ -1,3 +1,7 @@
+//! Filesystem entry swap via renameat2(RENAME_EXCHANGE). Every
+//! irreversible operation in the tool (migration steps, rollback,
+//! kernel hook) goes through this function.
+
 use std::ffi::CString;
 use std::os::fd::AsRawFd;
 use std::path::Path;
@@ -9,7 +13,7 @@ use std::path::Path;
 /// (fs/fat/namei_vfat.c:1097-1100). Each write is a complete
 /// 32-byte entry (fs/fat/inode.c:887-906), so partial power
 /// loss produces entries with consistent size and cluster fields.
-pub fn atomic_swap(dir: &Path, a: &str, b: &str) -> Result<(), String> {
+pub fn rename_exchange(dir: &Path, a: &str, b: &str) -> Result<(), String> {
     let dir_fd = std::fs::File::open(dir)
         .map_err(|e| format!("open {}: {e}", dir.display()))?;
 

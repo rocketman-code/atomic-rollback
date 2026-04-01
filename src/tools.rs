@@ -1,15 +1,19 @@
+//! Wrappers for external tools (btrfs-progs, blkid, findmnt, mount,
+//! dracut, grub2-mkconfig, rsync) and fstab parsing helpers. Each
+//! function delegates to a system tool and returns structured results.
+
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::Command;
 use std::fs;
 
-use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, FSTAB_MOUNT_POINT, FSTAB_OPTIONS};
+use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, FSTAB_MOUNT_POINT, FSTAB_OPTIONS, PROBE_MOUNT_PREFIX, TOPLEVEL_MOUNT};
 
 /// Flush all pending filesystem changes to disk.
 /// Btrfs operations (RENAME_EXCHANGE, set-default) use btrfs_end_transaction,
 /// which commits to the in-memory journal but NOT to disk. Changes are lost
 /// on power failure until the next btrfs transaction commit (up to 30s).
-/// syncfs forces the commit. Call before any exit point where the user reboots.
+/// syncfs forces the commit.
 pub fn sync_filesystem(path: &str) -> Result<(), String> {
     let f = fs::File::open(path)
         .map_err(|e| format!("open {path} for sync: {e}"))?;
@@ -21,7 +25,8 @@ pub fn sync_filesystem(path: &str) -> Result<(), String> {
     }
 }
 
-/// Run a command, return stdout as trimmed string. Fails if exit code != 0.
+/// Runs a command and returns stdout as a trimmed string. Fails on non-zero exit.
+/// Uses from_utf8_lossy: all wrapped tools (btrfs, blkid, findmnt) produce ASCII.
 pub fn run_stdout(cmd: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new(cmd).args(args).output()
         .map_err(|e| format!("{cmd}: {e}"))?;
@@ -32,20 +37,27 @@ pub fn run_stdout(cmd: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Run a command, return success/failure without capturing output.
+/// Runs a command. On failure, includes stderr in the error message.
 fn run_ok(cmd: &str, args: &[&str]) -> Result<(), String> {
-    let status = Command::new(cmd).args(args).status()
+    let output = Command::new(cmd).args(args).output()
         .map_err(|e| format!("{cmd}: {e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("{cmd} {} failed", args.join(" "))) }
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("{cmd} {}: {stderr}", args.join(" ")))
+    }
 }
 
 // --- blkid ---
 
+/// Returns the block device path for a filesystem UUID (e.g. "UUID" -> "/dev/sda2").
 pub fn blkid_device_for_uuid(uuid: &str) -> Result<String, String> {
     run_stdout("blkid", &["--uuid", uuid])
 }
 
-/// Resolve a fstab device field (UUID=, LABEL=, or /dev/ path) to a block device path.
+/// Resolves a fstab device field to a block device path.
+/// Handles UUID=, LABEL=, and raw /dev/ paths. Does not handle PARTUUID= or PARTLABEL=.
 pub fn resolve_fstab_device(device: &str) -> Result<String, String> {
     if let Some(uuid) = device.strip_prefix("UUID=") {
         blkid_device_for_uuid(uuid)
@@ -56,6 +68,7 @@ pub fn resolve_fstab_device(device: &str) -> Result<String, String> {
     }
 }
 
+/// Returns the filesystem type for a UUID (e.g. "btrfs", "ext4", "vfat").
 pub fn blkid_fstype(uuid: &str) -> Result<String, String> {
     let device = blkid_device_for_uuid(uuid)?;
     run_stdout("blkid", &["-s", "TYPE", "-o", "value", &device])
@@ -76,7 +89,6 @@ pub fn findmnt_target_for_uuid(uuid: &str) -> Result<String, String> {
         0 => Err(format!("UUID={uuid} not mounted")),
         1 => Ok(targets[0].to_string()),
         _ => {
-            // Multiple mounts (Btrfs with subvolumes). Use / specifically.
             targets.iter()
                 .find(|&&t| t == "/")
                 .map(|t| t.to_string())
@@ -85,6 +97,7 @@ pub fn findmnt_target_for_uuid(uuid: &str) -> Result<String, String> {
     }
 }
 
+/// Checks whether a path is an active mount point.
 pub fn is_mountpoint(path: &Path) -> bool {
     Command::new("mountpoint").arg("-q").arg(path).status()
         .is_ok_and(|s| s.success())
@@ -94,10 +107,12 @@ pub fn is_mountpoint(path: &Path) -> bool {
 // Output parsed against format: "ID %llu gen %llu top level %llu path %s\n"
 // (cmds/subvolume-list.c:822). JSON output exists but is behind #if EXPERIMENTAL.
 
+/// Lists all subvolumes on the filesystem containing mount_point.
 pub fn btrfs_subvol_list(mount_point: &str) -> Result<String, String> {
     run_stdout("btrfs", &["subvolume", "list", mount_point])
 }
 
+/// Returns the default subvolume ID for the filesystem at mount_point.
 pub fn btrfs_subvol_get_default(mount_point: &str) -> Result<u64, String> {
     let out = run_stdout("btrfs", &["subvolume", "get-default", mount_point])?;
     out.split_whitespace().nth(1)
@@ -105,17 +120,19 @@ pub fn btrfs_subvol_get_default(mount_point: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("cannot parse default subvol ID from: {out}"))
 }
 
+/// Sets the default subvolume for the filesystem at mount_point.
 pub fn btrfs_subvol_set_default(id: u64, mount_point: &str) -> Result<(), String> {
     run_ok("btrfs", &["subvolume", "set-default", &id.to_string(), mount_point])
 }
 
+/// Creates a btrfs snapshot of src at dst.
+/// Captures stdout because btrfs prints to stdout, which conflicts
+/// with the libdnf5 actions plugin's pipe when called from the dnf hook.
 pub fn btrfs_subvol_snapshot(src: &str, dst: &str) -> Result<(), String> {
-    // Use run_stdout to capture (and discard) stdout.
-    // btrfs prints "Create snapshot of '...' in '...'" which conflicts
-    // with the libdnf5 actions plugin's stdout pipe.
     run_stdout("btrfs", &["subvolume", "snapshot", src, dst]).map(|_| ())
 }
 
+/// Looks up a subvolume's ID by name. Parses btrfs subvolume list output.
 pub fn btrfs_subvol_id_by_name(mount_point: &str, name: &str) -> Result<u64, String> {
     let list = btrfs_subvol_list(mount_point)?;
     list.lines()
@@ -124,7 +141,6 @@ pub fn btrfs_subvol_id_by_name(mount_point: &str, name: &str) -> Result<u64, Str
         .and_then(|id| id.parse::<u64>().ok())
         .ok_or_else(|| format!("subvol '{name}' not found on {mount_point}"))
 }
-
 
 // --- mount/umount ---
 
@@ -191,7 +207,7 @@ pub fn with_toplevel<F, T>(f: F) -> Result<T, String>
 where
     F: FnOnce(&str) -> Result<T, String>,
 {
-    let toplevel = "/mnt/atomic-rollback-toplevel";
+    let toplevel = TOPLEVEL_MOUNT;
     let (device, _) = root_device()?;
 
     fs::create_dir_all(toplevel).map_err(|e| format!("mkdir {toplevel}: {e}"))?;
@@ -199,6 +215,8 @@ where
 
     let result = f(toplevel);
 
+    // Best-effort cleanup. A stale mount or temp dir persists until
+    // reboot but does not affect the boot chain.
     let _ = umount(toplevel);
     let _ = fs::remove_dir(toplevel);
 
@@ -214,15 +232,19 @@ pub fn get_mount_point(uuid: &str) -> Result<MountPoint, String> {
         }
     }
 
-    let probe_dir = format!("/tmp/atomic-rollback-probe-{}", &uuid[..8.min(uuid.len())]);
+    let probe_dir = format!("{}{}", PROBE_MOUNT_PREFIX, &uuid[..8.min(uuid.len())]);
     fs::create_dir_all(&probe_dir).map_err(|e| format!("mkdir {probe_dir}: {e}"))?;
     let device = blkid_device_for_uuid(uuid)?;
     mount_ro(&device, &probe_dir)?;
     Ok(MountPoint::Probed(probe_dir))
 }
 
+/// A filesystem mount point, either already mounted or probed temporarily.
+/// Probed mounts are unmounted on drop.
 pub enum MountPoint {
+    /// Already mounted by the system (e.g. / or /home).
     Existing(String),
+    /// Temporarily mounted by this tool for inspection.
     Probed(String),
 }
 
@@ -237,6 +259,7 @@ impl MountPoint {
 impl Drop for MountPoint {
     fn drop(&mut self) {
         if let MountPoint::Probed(p) = self {
+            // Best-effort. Failure means the mount persists until reboot.
             let _ = Command::new("umount").arg(p.as_str()).output();
             let _ = fs::remove_dir(p.as_str());
         }

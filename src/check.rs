@@ -1,3 +1,8 @@
+//! BOOTS predicate: evaluates whether the system is bootable by tracing
+//! the boot chain from UEFI firmware through GRUB to the root filesystem.
+//! Each check corresponds to a link in the chain:
+//!   UEFI -> shim -> GRUB -> grub.cfg -> BLS entries -> kernel -> root mount -> fstab
+
 use std::fs;
 use std::path::Path;
 
@@ -9,6 +14,7 @@ use crate::tools;
 
 type CheckResult = Result<(), String>;
 
+/// Result of the BOOTS predicate evaluation.
 pub enum BootStatus {
     Pass,
     Warn,
@@ -43,7 +49,6 @@ fn evaluate_checks(checks: Vec<(&str, Vec<CheckResult>)>) -> BootStatus {
     }
 }
 
-/// Evaluate the BOOTS predicate against the filesystem.
 pub fn verify_bootable(root: &Path) -> BootStatus {
     let grub = match GrubContext::from_system(root) {
         Ok(g) => g,
@@ -62,9 +67,8 @@ pub fn verify_bootable(root: &Path) -> BootStatus {
     ])
 }
 
-/// Verify a snapshot is bootable before rollback (pre-swap gate).
-/// Skips P1 (ESP is vfat, external to Btrfs; files don't change).
-/// Skips default subvol match (set-default comes after swap).
+/// Skips ESP checks (vfat, external to the btrfs snapshot) and
+/// default subvol match (set-default comes after the swap).
 pub fn verify_snapshot_bootable(root: &Path) -> BootStatus {
     let grub = match GrubContext::for_snapshot(root) {
         Ok(g) => g,
@@ -74,8 +78,6 @@ pub fn verify_snapshot_bootable(root: &Path) -> BootStatus {
         )]),
     };
 
-    // GRUB config checks without default subvol match.
-    // Default subvol is set AFTER the swap; checking it before is meaningless.
     let grub_cfg = root.join(&P.grub_dir[1..]).join("grub.cfg");
     let grub_checks = vec![
         check_file_exists_nonempty(&grub_cfg).map_err(|_|
@@ -267,7 +269,6 @@ fn check_bls_entries(root: &Path, grub: &GrubContext) -> Vec<CheckResult> {
         return vec![];
     }
 
-    // None valid: FAIL
     let mut results: Vec<CheckResult> = failures.into_iter().map(Err).collect();
     results.push(Err(
         "No boot entry has a valid kernel, initramfs, and root parameter. \
@@ -276,6 +277,9 @@ fn check_bls_entries(root: &Path, grub: &GrubContext) -> Vec<CheckResult> {
     results
 }
 
+// BLS fields may contain GRUB variables after the file path:
+//   initrd /initramfs-6.19.9.img $tuned_initrd
+// Only the first token is a file path. The rest is GRUB's concern.
 fn validate_bls_entry(grub: &GrubContext, conf: &Path) -> Result<(), String> {
     let content = fs::read_to_string(conf)
         .map_err(|e| format!("Cannot read boot entry {}: {e}", conf.display()))?;
@@ -295,10 +299,6 @@ fn validate_bls_entry(grub: &GrubContext, conf: &Path) -> Result<(), String> {
             "Boot entry {} has no 'options' field. \
              The kernel will not know which root filesystem to mount.", conf.display()))?;
 
-    // BLS fields may contain GRUB variables after the file path:
-    //   linux /vmlinuz-6.19.9
-    //   initrd /initramfs-6.19.9.img $tuned_initrd
-    // The first token is the file. The rest is GRUB's concern.
     let linux_path = linux.split_whitespace().next().unwrap_or(linux);
     let initrd_path = initrd.split_whitespace().next().unwrap_or(initrd);
 

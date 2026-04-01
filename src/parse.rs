@@ -1,14 +1,16 @@
-/// Byte-level parsers for BLS entries, mount options, and kernel parameters.
-/// Formally verified by Verus: cargo verus build
-/// Normal cargo build erases all verification annotations.
-/// One file. The proof IS the code.
+//! Parsers for mount options, BLS entries, and kernel cmdline parameters.
+//! The verus! block contains byte-level implementations with inline
+//! verification. Under cargo build, annotations are erased. Under
+//! cargo verus build, loop termination, bounds, and postconditions
+//! are machine-checked.
 
 use vstd::prelude::*;
 
 verus! {
 
-// ASCII byte values for the parser. Verus does not support byte literal
-// syntax (b',') -- lit_to_vir handles LitKind::Int but not LitKind::Byte.
+// Byte values for the verus! block. Verus does not support byte literal
+// syntax (b',') -- lit_to_vir handles LitKind::Int but not LitKind::Byte
+// (rust_verify/src/rust_to_vir_expr.rs).
 pub const COMMA: u8 = 44u8;
 pub const EQUALS: u8 = 61u8;
 pub const SPACE: u8 = 32u8;
@@ -16,8 +18,6 @@ pub const TAB: u8 = 9u8;
 pub const NEWLINE: u8 = 10u8;
 pub const HASH: u8 = 35u8;
 pub const CR: u8 = 13u8;
-
-// --- Spec functions ---
 
 pub open spec fn bytes_match_at(haystack: Seq<u8>, needle: Seq<u8>, pos: int) -> bool {
     pos >= 0
@@ -28,8 +28,6 @@ pub open spec fn bytes_match_at(haystack: Seq<u8>, needle: Seq<u8>, pos: int) ->
 pub open spec fn is_option_start(options: Seq<u8>, p: int) -> bool {
     p == 0 || (p > 0 && options[p - 1] == COMMA)
 }
-
-// --- match_at ---
 
 fn match_at(haystack: &[u8], needle: &[u8], pos: usize) -> (result: bool)
     requires
@@ -57,8 +55,9 @@ fn match_at(haystack: &[u8], needle: &[u8], pos: usize) -> (result: bool)
     true
 }
 
-// --- find_option ---
-
+// Comma-separated mount options: "compress=zstd:1,subvol=root"
+// Returns the byte range of the value for a given key.
+// Matches whole keys: "subvol" does not match "subvolid".
 fn find_option(options: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
     requires
         key@.len() + options@.len() <= usize::MAX as int,
@@ -89,8 +88,9 @@ fn find_option(options: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
         decreases options@.len() - i,
     {
         let option_start = i;
-        // Scan to comma or end. found_comma carries the fact through the invariant
-        // because Verus lowers compound guards to opaque booleans (sst_to_air.rs:2606).
+        // found_comma carries the comma-detection fact through the loop
+        // invariant. Verus lowers compound while-guards to opaque booleans
+        // (sst_to_air.rs:2606), so a flag is needed to preserve the proof.
         let mut found_comma = false;
         let mut option_end = i;
         while option_end < options.len() && !found_comma
@@ -132,8 +132,8 @@ fn find_option(options: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
     None
 }
 
-// --- find_root_uuid ---
-
+// Whitespace-separated kernel cmdline tokens: "root=UUID=abc-123 ro rhgb"
+// Returns the byte range of the value after a given prefix.
 fn find_root_uuid(options: &[u8], prefix: &[u8]) -> (result: Option<(usize, usize)>)
     requires
         prefix@.len() > 0,
@@ -193,8 +193,9 @@ fn find_root_uuid(options: &[u8], prefix: &[u8]) -> (result: Option<(usize, usiz
     None
 }
 
-// --- find_field ---
-
+// BLS entry format (Boot Loader Specification, systemd.io/BOOT_LOADER_SPECIFICATION):
+// Lines of "key<whitespace>value". Lines starting with # are comments.
+// Returns the byte range of the trimmed value for a given key.
 fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
     requires
         key@.len() + content@.len() <= usize::MAX as int,
@@ -222,6 +223,7 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
     {
         let line_start = i;
 
+        // skip leading whitespace
         while i < content.len() && (content[i] == SPACE || content[i] == TAB)
             invariant
                 line_start <= i,
@@ -237,6 +239,7 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
 
         let content_start = i;
 
+        // find end of line
         let mut line_end = i;
         while line_end < content.len() && content[line_end] != NEWLINE
             invariant
@@ -252,6 +255,7 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
                 let after_key = content_start + key.len();
                 if after_key < content.len() {
                     if content[after_key] == SPACE || content[after_key] == TAB {
+                        // skip whitespace between key and value
                         let mut val_start = after_key + 1;
                         while val_start < line_end && (content[val_start] == SPACE || content[val_start] == TAB)
                             invariant
@@ -262,6 +266,7 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
                         {
                             val_start = val_start + 1;
                         }
+                        // trim trailing whitespace and \r
                         let mut val_end = if val_start <= line_end { line_end } else { val_start };
                         while val_end > val_start && (content[val_end - 1] == SPACE || content[val_end - 1] == TAB || content[val_end - 1] == CR)
                             invariant
@@ -289,28 +294,40 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
 
 } // verus!
 
-// --- Public &str wrappers ---
-
 const ROOT_PREFIX: &[u8] = b"root=UUID=";
 
+/// Extracts a value from comma-separated mount options.
+/// "compress=zstd:1,subvol=root" with key "subvol" returns Some("root").
+/// Matches whole keys only: "subvol" does not match "subvolid".
 pub fn extract_mount_option<'a>(options: &'a str, key: &str) -> Option<&'a str> {
     let (s, e) = find_option(options.as_bytes(), key.as_bytes())?;
     Some(&options[s..e])
 }
 
+/// Extracts the root filesystem UUID from kernel cmdline options.
+/// Looks for "root=UUID=<value>" in whitespace-separated tokens.
 pub fn extract_root_uuid_from_options<'a>(options: &'a str) -> Option<&'a str> {
     let (s, e) = find_root_uuid(options.as_bytes(), ROOT_PREFIX)?;
     Some(&options[s..e])
 }
 
+/// Extracts a field value from a BLS entry.
+/// Format: lines of "key value". Comments (#) and leading whitespace skipped.
+/// Trailing whitespace and \r trimmed from values.
 pub fn bls_field<'a>(content: &'a str, key: &str) -> Option<&'a str> {
     let (s, e) = find_field(content.as_bytes(), key.as_bytes())?;
     Some(&content[s..e])
 }
 
+/// Parses all recognized fields from a BLS entry into a map.
+/// BLS fields per systemd.io/BOOT_LOADER_SPECIFICATION:
+///   title, version, linux, initrd, options
+/// GRUB extensions (from grub.cfg 10_linux):
+///   grub_users, grub_arg, grub_class
 pub fn parse_bls_fields(content: &str) -> std::collections::HashMap<String, String> {
     let mut fields = std::collections::HashMap::new();
-    for key in &["title", "version", "linux", "initrd", "options", "grub_users", "grub_arg", "grub_class"] {
+    for key in &["title", "version", "linux", "initrd", "options",
+                 "grub_users", "grub_arg", "grub_class"] {
         if let Some(val) = bls_field(content, key) {
             fields.insert(key.to_string(), val.to_string());
         }

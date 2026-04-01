@@ -1,20 +1,22 @@
+//! Migration: restructures Fedora's default btrfs layout for rollback.
+//! setup() separates /var only. migrate() does the full 10-step boot
+//! migration. Each step follows create-alongside-verify-switch.
+
 use std::fs;
 use std::path::Path;
 
-use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, FSTAB_MOUNT_POINT, FSTAB_FSTYPE, FSTAB_OPTIONS};
+use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, FSTAB_MOUNT_POINT, FSTAB_FSTYPE, FSTAB_OPTIONS, TOPLEVEL_MOUNT};
 use crate::{check, platform::FEDORA as P, swap, tools};
 
-/// Mount a target using fstab lookup (like `mount /boot/efi`).
+/// Delegates to mount(1) which resolves the device from fstab.
 fn run_mount_fstab(target: &str) -> Result<(), String> {
     let status = std::process::Command::new("mount").arg(target).status()
         .map_err(|e| format!("mount {target}: {e}"))?;
     if status.success() { Ok(()) } else { Err(format!("mount {target} failed")) }
 }
 
-/// Setup: separate /var and enable root snapshots and rollback.
+/// Separates /var and enables rollback on the stock Fedora layout.
 /// No /boot changes, no ESP modification, no GRUB Btrfs dependency.
-/// Works on stock Fedora partition layout.
-/// Proof: theorem 12 (setup_is_safe).
 pub fn setup() -> Result<(), String> {
     let root = Path::new("/");
 
@@ -26,6 +28,7 @@ pub fn setup() -> Result<(), String> {
     step10_separate_var()?;
     check::gate("2-var", root, Some("/etc/fstab.new"));
 
+    // set-default and fstab swap are in the btrfs in-memory journal only.
     tools::sync_filesystem("/")?;
 
     println!("Setup complete. Snapshots and rollback are enabled.");
@@ -33,10 +36,9 @@ pub fn setup() -> Result<(), String> {
     Ok(())
 }
 
-/// Full boot migration for atomic rollback with kernel rollback.
-/// Moves /boot from ext4 to Btrfs, updates ESP, installs kernel-install hook.
-/// 10 steps, each gated by the BOOTS predicate.
-/// Each step: create alongside, verify, atomic swap.
+/// Full 10-step boot migration. Moves /boot from ext4 to Btrfs, updates
+/// ESP, fixes grubenv for btrfs, separates /var. Each step is gated by
+/// the BOOTS predicate.
 pub fn migrate() -> Result<(), String> {
     let root = Path::new("/");
 
@@ -73,9 +75,8 @@ pub fn migrate() -> Result<(), String> {
     step10_separate_var()?;
     check::gate("10-var", root, Some("/etc/fstab.new"));
 
-    // Flush all changes to disk before telling the user to reboot.
-    // Btrfs RENAME_EXCHANGE and set-default use btrfs_end_transaction
-    // (in-memory journal), not btrfs_commit_transaction (on-disk).
+    // All 10 steps complete. Without syncfs, changes from RENAME_EXCHANGE
+    // and set-default are in the btrfs in-memory journal only.
     tools::sync_filesystem("/")?;
 
     println!("Migration complete. All gates passed.");
@@ -87,11 +88,12 @@ fn step1_ensure_boot_on_btrfs() -> Result<(), String> {
 
     if tools::is_mountpoint(Path::new("/boot")) {
         println!("  ext4 /boot is mounted. Copying to Btrfs");
-        tools::umount("/boot/efi").ok();
+        tools::umount("/boot/efi").ok(); // may not be mounted
         tools::umount("/boot")?;
 
-        let _ = fs::create_dir_all("/mnt/old-boot");
-        // Find the ext4 boot device from fstab
+        let old_boot = "/mnt/old-boot";
+        fs::create_dir_all(old_boot)
+            .map_err(|e| format!("mkdir {old_boot}: {e}"))?;
         let fstab = fs::read_to_string("/etc/fstab").map_err(|e| format!("read fstab: {e}"))?;
         let boot_device_field = fstab.lines()
             .filter(|l| !l.trim().starts_with('#'))
@@ -103,12 +105,11 @@ fn step1_ensure_boot_on_btrfs() -> Result<(), String> {
             .ok_or("cannot find ext4 /boot in fstab")?;
 
         let device = tools::resolve_fstab_device(boot_device_field)?;
-        tools::mount_ro(&device, "/mnt/old-boot")?;
-        tools::rsync("/mnt/old-boot/", "/boot/")?;
-        tools::umount("/mnt/old-boot")?;
+        tools::mount_ro(&device, old_boot)?;
+        tools::rsync(&format!("{old_boot}/"), "/boot/")?;
+        tools::umount(old_boot)?;
 
-        // Remount ext4 /boot and /boot/efi (so current predicate holds)
-        // Use `mount <target>` which looks up fstab. Matches the proven bash script.
+        // Remount ext4 /boot and /boot/efi so BOOTS holds at the gate.
         run_mount_fstab("/boot")?;
         run_mount_fstab("/boot/efi")?;
     } else {
@@ -160,7 +161,7 @@ fn step4_switch_boot_mount() -> Result<(), String> {
     println!("=== Step 4: Switch /boot to Btrfs ===");
 
     if tools::is_mountpoint(Path::new("/boot")) {
-        tools::umount("/boot/efi").ok();
+        tools::umount("/boot/efi").ok(); // may not be mounted
         tools::umount("/boot")?;
         run_mount_fstab("/boot/efi")?;
         println!("  unmounted ext4, /boot now on Btrfs");
@@ -204,7 +205,7 @@ fn step5_update_fstab() -> Result<(), String> {
 
     fs::write("/etc/fstab.new", &new_content)
         .map_err(|e| format!("write fstab.new: {e}"))?;
-    swap::atomic_swap(Path::new("/etc"), "fstab", "fstab.new")?;
+    swap::rename_exchange(Path::new("/etc"), "fstab", "fstab.new")?;
 
     Ok(())
 }
@@ -216,7 +217,7 @@ fn step6_rebuild_initramfs() -> Result<(), String> {
     let new_path = format!("/boot/initramfs-{kver}.img.new");
     remove_stale(&new_path);
     tools::dracut_rebuild(&new_path, &kver)?;
-    swap::atomic_swap(
+    swap::rename_exchange(
         Path::new("/boot"),
         &format!("initramfs-{kver}.img"),
         &format!("initramfs-{kver}.img.new"),
@@ -232,10 +233,8 @@ fn step7_regenerate_grub_cfg() -> Result<(), String> {
 
     tools::grub2_mkconfig(&new_path)?;
 
-    // GRUB cannot write to Btrfs (definitional: the driver is read-only).
-    // save_env requires write access (definitional: saving is writing).
-    // Therefore save_env is a guaranteed failure on Btrfs.
-    // Strip it from the generated grub.cfg to prevent the error flash.
+    // GRUB's btrfs driver is read-only. save_env fails on every boot.
+    // Strip it from the generated grub.cfg.
     let content = fs::read_to_string(&new_path)
         .map_err(|e| format!("read grub.cfg.new: {e}"))?;
     let cleaned: String = content.lines()
@@ -245,7 +244,7 @@ fn step7_regenerate_grub_cfg() -> Result<(), String> {
     fs::write(&new_path, &cleaned)
         .map_err(|e| format!("write grub.cfg.new: {e}"))?;
 
-    swap::atomic_swap(Path::new(P.grub_dir), "grub.cfg", "grub.cfg.new")?;
+    swap::rename_exchange(Path::new(P.grub_dir), "grub.cfg", "grub.cfg.new")?;
 
     Ok(())
 }
@@ -274,6 +273,8 @@ fn step9_update_esp() -> Result<(), String> {
 
     // On ext4, GRUB prefix is /grub2 (partition-relative).
     // On Btrfs with default subvol, it needs /boot/grub2.
+    // The !contains(&full_grub) guards prevent double-prefixing
+    // (/boot/grub2 -> /boot/boot/grub2) on re-run.
     let grub_basename = Path::new(P.grub_dir).file_name()
         .and_then(|n| n.to_str()).unwrap_or("grub2");
     let short_grub = format!("/{grub_basename}");
@@ -324,8 +325,8 @@ fn step9_update_esp() -> Result<(), String> {
     fs::write(&esp_cfg_new, &new_cfg)
         .map_err(|e| format!("write {esp_cfg_new}: {e}"))?;
 
-    // Verify the three ESP properties the model requires before swap.
-    // BOOTS needs: esp_target_uuid correct, esp_has_btrfs_relative, esp_prefix_has_boot.
+    // Verify the new ESP grub.cfg before swap: correct UUID,
+    // btrfs_relative_path set, prefix includes /boot.
     if !new_cfg.contains(&new_uuid) {
         let _ = fs::remove_file(&esp_cfg_new);
         return Err(format!(
@@ -349,7 +350,7 @@ fn step9_update_esp() -> Result<(), String> {
              Old ESP preserved."));
     }
 
-    swap::atomic_swap(Path::new(P.esp_dir), "grub.cfg", "grub.cfg.new")?;
+    swap::rename_exchange(Path::new(P.esp_dir), "grub.cfg", "grub.cfg.new")?;
 
     Ok(())
 }
@@ -380,7 +381,7 @@ fn step10_separate_var() -> Result<(), String> {
         .to_string();
 
     // Mount top-level to create the new subvolume alongside root and home
-    let toplevel = "/mnt/atomic-rollback-toplevel";
+    let toplevel = TOPLEVEL_MOUNT;
     fs::create_dir_all(toplevel).map_err(|e| format!("mkdir {toplevel}: {e}"))?;
     tools::mount_subvolid(&device, toplevel, BTRFS_TOPLEVEL_SUBVOLID)?;
 
@@ -426,7 +427,7 @@ fn step10_separate_var() -> Result<(), String> {
 
     fs::write("/etc/fstab.new", &new_fstab)
         .map_err(|e| format!("write fstab.new: {e}"))?;
-    swap::atomic_swap(Path::new("/etc"), "fstab", "fstab.new")?;
+    swap::rename_exchange(Path::new("/etc"), "fstab", "fstab.new")?;
     println!("  fstab updated with /var mount");
 
     // 6. Mount the new subvolume (so the system uses it immediately)
@@ -436,15 +437,10 @@ fn step10_separate_var() -> Result<(), String> {
     Ok(())
 }
 
-/// Step 10: Set NOCOW on /boot/grub2/ and recreate grubenv.
-///
-/// Postcondition: grubenv is a flat 1024-byte extent, not compressed or inline.
-///
-/// On Btrfs with compress=zstd, grubenv gets compressed and stored inline.
-/// GRUB's Btrfs driver (loadenv.c:216) rejects encoded/sparse extents.
-/// chattr +C on the directory makes new files inherit NOCOW.
-/// grub2-editenv create writes to grubenv.new then rename(2) to grubenv.
-/// The new inode inherits NOCOW from the parent directory.
+/// GRUB's btrfs driver (loadenv.c:216) rejects compressed/inline extents.
+/// On btrfs with compress=zstd, grubenv gets compressed by default.
+/// NOCOW on the directory makes new files (including grub2-editenv's
+/// write-to-.new-then-rename pattern) inherit flat extent storage.
 fn step8_fix_grubenv() -> Result<(), String> {
     println!("=== Step 8: Fix grubenv for GRUB Btrfs driver ===");
 

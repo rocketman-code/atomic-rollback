@@ -1,3 +1,6 @@
+//! CLI entry point. Parses arguments into Command/SnapshotCommand enums,
+//! then dispatches.
+
 mod check;
 mod consts;
 mod grub;
@@ -109,10 +112,12 @@ fn parse_args(args: &[String]) -> Command {
         "rollback" => {
             if is_help(args.get(2)) { print_help(); std::process::exit(0); }
             Command::Rollback {
-                name: args.get(2).cloned().unwrap_or_else(|| "root.pre-update".into()),
+                name: args.get(2).cloned().unwrap_or_else(|| consts::DEFAULT_SNAPSHOT_NAME.into()),
             }
         }
         "kernel-hook" => {
+            // kernel-install calls hooks for events we may not handle.
+            // Missing args = nothing to do.
             let command = args.get(2).cloned().unwrap_or_default();
             let kver = args.get(3).cloned().unwrap_or_default();
             if command.is_empty() || kver.is_empty() {

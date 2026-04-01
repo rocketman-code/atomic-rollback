@@ -1,18 +1,16 @@
+//! Rollback: verify snapshot is bootable, swap root subvolume names
+//! via RENAME_EXCHANGE, update default subvolume. Undoes the swap
+//! if set-default fails.
+
 use std::path::Path;
 
-use crate::consts::BTRFS_TOPLEVEL_SUBVOLID;
+use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, TOPLEVEL_MOUNT};
 use crate::{check, swap, tools};
 
-/// Roll back to a named snapshot.
-/// 1. Mount top-level subvolume
-/// 2. Verify snapshot is bootable (P2-P5, skip ESP)
-/// 3. RENAME_EXCHANGE root <-> snapshot
-/// 4. Update default subvolume to match new root
-///
-/// Verification BEFORE the irreversible swap. By construction, not by discipline.
-/// Cannot use with_toplevel because undo-on-failure needs direct control.
+/// Cannot use with_toplevel because the undo path needs to swap back
+/// if set-default fails, which requires the mount to stay alive.
 pub fn rollback(snapshot_name: &str) -> Result<(), String> {
-    let toplevel = "/mnt/atomic-rollback-toplevel";
+    let toplevel = TOPLEVEL_MOUNT;
     let (device, fstab) = tools::root_device()?;
     let root_subvol = tools::root_subvol_name(&fstab)?;
 
@@ -27,9 +25,6 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
         return Err(format!("snapshot '{snapshot_name}' not found at top-level"));
     }
 
-    // Verify snapshot contents BEFORE the irreversible swap.
-    // P1 (ESP) skipped: vfat, external to Btrfs, files don't change.
-    // Default subvol match skipped: set-default comes after swap.
     println!("\n  Verifying snapshot '{snapshot_name}' is bootable...");
     match check::verify_snapshot_bootable(Path::new(&snapshot_path)) {
         check::BootStatus::Pass | check::BootStatus::Warn => {
@@ -48,7 +43,7 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
 
     // RENAME_EXCHANGE: root_subvol <-> snapshot
     println!("  RENAME_EXCHANGE: {root_subvol} <-> {snapshot_name}");
-    swap::atomic_swap(Path::new(toplevel), &root_subvol, snapshot_name)?;
+    swap::rename_exchange(Path::new(toplevel), &root_subvol, snapshot_name)?;
 
     // Update default subvolume to match the new root.
     // If this fails, UNDO the swap so the system is unchanged.
@@ -57,7 +52,10 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
         Ok(id) => id,
         Err(e) => {
             eprintln!("  set-default failed; undoing swap to restore original state");
-            let _ = swap::atomic_swap(Path::new(toplevel), &root_subvol, snapshot_name);
+            if let Err(undo_err) = swap::rename_exchange(Path::new(toplevel), &root_subvol, snapshot_name) {
+                eprintln!("  CRITICAL: undo swap also failed: {undo_err}");
+                eprintln!("  System is in an inconsistent state. Manual recovery required.");
+            }
             tools::umount(toplevel)?;
             let _ = std::fs::remove_dir(toplevel);
             return Err(format!("rollback aborted: cannot determine new root ID: {e}"));
@@ -66,13 +64,16 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
     println!("  set-default: ID {new_root_id}");
     if let Err(e) = tools::btrfs_subvol_set_default(new_root_id, toplevel) {
         eprintln!("  set-default failed; undoing swap to restore original state");
-        let _ = swap::atomic_swap(Path::new(toplevel), &root_subvol, snapshot_name);
+        if let Err(undo_err) = swap::rename_exchange(Path::new(toplevel), &root_subvol, snapshot_name) {
+            eprintln!("  CRITICAL: undo swap also failed: {undo_err}");
+            eprintln!("  System is in an inconsistent state. Manual recovery required.");
+        }
         tools::umount(toplevel)?;
         let _ = std::fs::remove_dir(toplevel);
         return Err(format!("rollback aborted: set-default failed: {e}"));
     }
 
-    // Flush to disk before telling the user to reboot.
+    // Swap and set-default are in the btrfs in-memory journal only.
     tools::sync_filesystem(toplevel)?;
 
     // Rollback succeeded. Cleanup is best-effort; a stale mount

@@ -1,17 +1,16 @@
+//! Kernel-install plugin logic. Called during dnf kernel upgrades to
+//! create symlinks and fix BLS entry paths so GRUB resolves kernels
+//! correctly on a migrated btrfs layout.
+
 use std::fs;
 use std::path::Path;
 
 use crate::{check, platform::FEDORA as P, swap, tools};
 
-/// Handle kernel-install events. Called by the thin bash dispatcher at
-/// /usr/lib/kernel/install.d/90-atomic-rollback.install.
-///
-/// Postcondition (add): symlinks exist, BLS paths resolve through GRUB.
-/// Postcondition (remove): symlinks removed.
-///
-/// Guard: only acts when root is Btrfs and /boot is NOT a separate mount.
+/// Dispatched by /usr/lib/kernel/install.d/90-atomic-rollback.install.
+/// Only acts when root is btrfs and /boot is not a separate mount
+/// (i.e. the full migration has been applied).
 pub fn handle(command: &str, kernel_version: &str) -> Result<(), String> {
-    // Guard: root must be Btrfs, /boot must not be a separate mount.
     let root_fstype = tools::run_stdout("findmnt", &["-n", "-o", "FSTYPE", "/"])?;
     if root_fstype != "btrfs" {
         return Ok(()); // Not our business
@@ -41,9 +40,8 @@ fn handle_add(kver: &str) -> Result<(), String> {
     // Fix BLS entry paths if grub2-mkrelpath wrote wrong prefix.
     fix_bls_paths(kver)?;
 
-    // Flush symlinks and BLS swap to disk. The user may reboot at any
-    // time after kernel-install completes.
-    let _ = tools::sync_filesystem("/");
+    // Symlinks and BLS swap are in the btrfs in-memory journal only.
+    tools::sync_filesystem("/")?;
 
     // Gate: verify the system is still bootable.
     match check::verify_bootable(Path::new("/")) {
@@ -59,6 +57,8 @@ fn handle_add(kver: &str) -> Result<(), String> {
 }
 
 fn handle_remove(kver: &str) -> Result<(), String> {
+    // Best-effort: symlinks may not exist if the hook wasn't active
+    // when this kernel was installed.
     let _ = fs::remove_file(format!("/vmlinuz-{kver}"));
     let _ = fs::remove_file(format!("/initramfs-{kver}.img"));
     Ok(())
@@ -146,9 +146,9 @@ fn fix_bls_paths(kver: &str) -> Result<(), String> {
     }
 
     // RENAME_EXCHANGE: old BLS entry preserved at .new
-    swap::atomic_swap(bls_dir, &bls_name, &new_name)?;
+    swap::rename_exchange(bls_dir, &bls_name, &new_name)?;
 
-    // Old content now at .new; clean up
+    // Old BLS content is at .new after the swap. Stale file is harmless.
     let _ = fs::remove_file(&new_path);
 
     Ok(())
