@@ -10,8 +10,16 @@ If a bad update breaks your system, one command restores the previous state. The
 - Btrfs root filesystem (Fedora's default since Fedora 33)
 - UEFI boot
 - Traditional Fedora desktop (Workstation, KDE, etc.), not Silverblue, Kinoite, or other atomic desktops (they have their own rollback mechanism)
+- Secure Boot compatible. No signed binaries are modified. All modified files (grub.cfg, initramfs, grubenv) are in GRUB's skip-verification list.
 
 Running outside these requirements is running outside what the tool has been verified against. `atomic-rollback check` will tell you if your system is compatible.
+
+## Install
+
+```
+sudo dnf copr enable rocketman-code/atomic-rollback
+sudo dnf install atomic-rollback
+```
 
 ## Quick start
 
@@ -71,15 +79,7 @@ A kernel-install hook is installed. When new kernels are installed via dnf, the 
 
 ## Automatic snapshots
 
-A libdnf5 actions plugin (`plugins/atomic-rollback.actions`) snapshots the root subvolume before every dnf transaction. If the snapshot cannot be created, dnf aborts (`raise_error=1`). If a snapshot already exists, dnf proceeds with the existing protection. Requires `libdnf5-plugin-actions`.
-
-Install the plugin:
-
-```
-sudo cp plugins/atomic-rollback.actions /etc/dnf/libdnf5-plugins/actions.d/
-```
-
-If you uninstall atomic-rollback, also remove the plugin file. Otherwise dnf will abort every transaction trying to run the missing command.
+A libdnf5 actions plugin snapshots the root subvolume before every dnf transaction. If the snapshot cannot be created, dnf aborts. If a snapshot already exists, dnf proceeds with the existing protection. The plugin is installed automatically by the RPM.
 
 ## Guarantees
 
@@ -128,7 +128,7 @@ The state machine is formally verified using [Kani](https://github.com/model-che
 11. User data is never lost. /home and /var are separate subvolumes, untouched by any swap. After rollback, the old root is preserved at the snapshot name. No operation in the tool deletes root, /home, or /var.
 12. Setup (root-only, no /boot changes) preserves bootability, is reboot-safe, and data-safe. Rollback works on the setup'd system.
 
-The proofs are parameterized over all valid initial states: Cloud VM and bare metal, with and without separate /var, across all fstab device reference formats (UUID=, /dev/, LABEL=) and compression options (zstd, lzo, none). The source is in `src/proof.rs`.
+The proofs are parameterized over hardware configurations (Cloud VM, bare metal, device reference formats, compression options) and boot chain axioms (GRUB behavior, kernel mount resolution, Secure Boot verification, transaction atomicity). Each theorem declares which axioms it requires. Kani explores all combinations symbolically. The source is in `src/proof.rs`.
 
 The parser functions (bootability check, BLS entry parsing, mount option extraction) are formally verified inline using [Verus](https://github.com/verus-lang/verus). Every loop is proven to terminate, every array access is proven in bounds, and every returned range is proven valid. The specifications live in `src/parse.rs` alongside the code they verify, inside a `verus!` macro block. Under normal `cargo build`, the specs are erased. Under `cargo verus build`, all conditions are machine-checked.
 
