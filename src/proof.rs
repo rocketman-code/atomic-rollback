@@ -84,10 +84,11 @@ pub enum PathScheme {
 #[derive(Clone, Copy, PartialEq)]
 pub enum SubvolId { Id256, Id259 }
 
-/// Fstab device reference formats modeled by this tool.
-/// fstab(5) also allows PARTUUID= and PARTLABEL= which are not handled.
+/// All six mount(8) device reference tag formats (mnt_valid_tagname,
+/// libmount/src/utils.c:47) plus raw /dev/ paths.
+/// Note: systemd fstab-generator only handles four (no ID=).
 #[derive(Clone, Copy, PartialEq)]
-pub enum DeviceRef { Uuid, DevPath, Label }
+pub enum DeviceRef { Uuid, DevPath, Label, PartUuid, PartLabel, Id }
 
 /// Compression option in fstab mount options.
 /// Inherited: no explicit compress= in fstab; filesystem default applies.
@@ -464,7 +465,7 @@ pub fn rollback(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
 mod tests {
     use super::*;
 
-    const ALL_DEVICE_REFS: [DeviceRef; 3] = [DeviceRef::Uuid, DeviceRef::DevPath, DeviceRef::Label];
+    const ALL_DEVICE_REFS: [DeviceRef; 6] = [DeviceRef::Uuid, DeviceRef::DevPath, DeviceRef::Label, DeviceRef::PartUuid, DeviceRef::PartLabel, DeviceRef::Id];
     const ALL_COMPRESSIONS: [Compression; 4] = [Compression::Zstd, Compression::Lzo, Compression::None, Compression::Inherited];
 
     // All axioms true: Fedora with standard GRUB, kernel, systemd
@@ -588,8 +589,11 @@ mod verification {
 
     fn any_device_ref() -> DeviceRef {
         let v: u8 = kani::any();
-        kani::assume(v <= 2);
-        match v { 0 => DeviceRef::Uuid, 1 => DeviceRef::DevPath, _ => DeviceRef::Label }
+        kani::assume(v <= 5);
+        match v {
+            0 => DeviceRef::Uuid, 1 => DeviceRef::DevPath, 2 => DeviceRef::Label,
+            3 => DeviceRef::PartUuid, 4 => DeviceRef::PartLabel, _ => DeviceRef::Id,
+        }
     }
 
     fn any_compression() -> Compression {

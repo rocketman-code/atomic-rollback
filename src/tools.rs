@@ -56,13 +56,35 @@ pub fn blkid_device_for_uuid(uuid: &str) -> Result<String, String> {
     run_stdout("blkid", &["--uuid", uuid])
 }
 
+/// Resolves a /dev/disk/ symlink to the real device path.
+fn resolve_udev_symlink(subdir: &str, value: &str) -> Result<String, String> {
+    let link = format!("/dev/disk/{subdir}/{value}");
+    fs::canonicalize(&link)
+        .map_err(|e| format!("{link}: {e}"))?
+        .to_str()
+        .ok_or_else(|| format!("{link}: non-UTF8 device path"))
+        .map(|s| s.to_string())
+}
+
 /// Resolves a fstab device field to a block device path.
-/// Handles UUID=, LABEL=, and raw /dev/ paths. Does not handle PARTUUID= or PARTLABEL=.
+/// Handles all six mount(8) tag formats defined in libmount's
+/// mnt_valid_tagname() (libmount/src/utils.c:47): UUID=, LABEL=,
+/// PARTUUID=, PARTLABEL=, ID=, and raw /dev/ paths.
+/// PARTUUID/PARTLABEL/ID resolve via /dev/disk/ symlinks
+/// (udev 60-persistent-storage.rules).
+/// Note: systemd fstab-generator only handles four tags (no ID=).
+/// ID= in fstab works with mount(8) but not with systemd boot.
 pub fn resolve_fstab_device(device: &str) -> Result<String, String> {
     if let Some(uuid) = device.strip_prefix("UUID=") {
         blkid_device_for_uuid(uuid)
     } else if let Some(label) = device.strip_prefix("LABEL=") {
         run_stdout("blkid", &["-L", label])
+    } else if let Some(partuuid) = device.strip_prefix("PARTUUID=") {
+        resolve_udev_symlink("by-partuuid", partuuid)
+    } else if let Some(partlabel) = device.strip_prefix("PARTLABEL=") {
+        resolve_udev_symlink("by-partlabel", partlabel)
+    } else if let Some(id) = device.strip_prefix("ID=") {
+        resolve_udev_symlink("by-id", id)
     } else {
         Ok(device.to_string())
     }
