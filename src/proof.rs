@@ -122,7 +122,8 @@ pub struct Axioms {
     // kernel mounts subvol= from cmdline, ignoring default subvol ID
     pub kernel_subvol_overrides_default: bool,
     // systemd treats fstab mount failures as fatal (no nofail).
-    // Source not yet verified from systemd fstab-generator.
+    // fstab-generator.c:741-742: nofail -> "wants", else -> "requires".
+    // fstab-generator.c:591-592: without nofail -> Before=local-fs.target.
     pub systemd_fstab_fatal: bool,
     // systemd kernel-install dispatches to install.d plugins
     pub kernel_install_dispatches_hooks: bool,
