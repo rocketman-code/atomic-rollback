@@ -106,8 +106,10 @@ pub struct Axioms {
     pub grub_loadenv_requires_nocow: bool,
     // shim_lock_verifier skips CONFIG, LINUX_INITRD, LOADENV
     pub grub_skips_config_verification: bool,
-    // renameat2(RENAME_EXCHANGE) is atomic within one btrfs transaction
-    pub rename_exchange_atomic: bool,
+    // renameat2(RENAME_EXCHANGE) on btrfs is atomic (single transaction)
+    pub rename_exchange_atomic_btrfs: bool,
+    // renameat2(RENAME_EXCHANGE) on vfat is safe (all partial states bootable)
+    pub rename_exchange_safe_vfat: bool,
     // syncfs forces btrfs transaction to disk
     pub syncfs_commits_transaction: bool,
     // kernel mounts subvol= from cmdline, ignoring default subvol ID
@@ -298,7 +300,7 @@ pub fn step4_switch_boot(s: &SystemState) -> SystemState {
 /// Step 5: Comment out ext4 /boot in fstab (RENAME_EXCHANGE).
 /// Requires artifact_verified: new fstab checked before swap.
 pub fn step5_update_fstab(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
-    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
+    if !s.artifact_verified || !ax.rename_exchange_atomic_btrfs { return None; }
     let mut next = *s;
     next.fstab_has_ext4_boot = false;
     next.artifact_verified = false;
@@ -309,7 +311,7 @@ pub fn step5_update_fstab(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
 /// Step 6: Rebuild initramfs for new layout (RENAME_EXCHANGE).
 /// Requires artifact_verified: new initramfs checked before swap.
 pub fn step6_rebuild_initramfs(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
-    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
+    if !s.artifact_verified || !ax.rename_exchange_atomic_btrfs { return None; }
     let mut next = *s;
     next.initramfs_current = true;
     next.artifact_verified = false;
@@ -320,7 +322,7 @@ pub fn step6_rebuild_initramfs(s: &SystemState, ax: &Axioms) -> Option<SystemSta
 /// Step 7: Regenerate grub.cfg (RENAME_EXCHANGE).
 /// Requires artifact_verified: new grub.cfg checked before swap.
 pub fn step7_regen_grub_cfg(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
-    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
+    if !s.artifact_verified || !ax.rename_exchange_atomic_btrfs { return None; }
     let mut next = *s;
     next.grub_cfg_on_btrfs = true;
     next.grub_cfg_current = true;
@@ -343,7 +345,7 @@ pub fn step8_fix_grubenv(s: &SystemState) -> SystemState {
 /// Step 9: Update ESP grub.cfg to point to Btrfs UUID (RENAME_EXCHANGE).
 /// Requires artifact_verified: new ESP grub.cfg checked before swap.
 pub fn step9_update_esp(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
-    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
+    if !s.artifact_verified || !ax.rename_exchange_safe_vfat { return None; }
     let mut next = *s;
     next.esp_target_uuid = Uuid::Btrfs;
     next.esp_has_btrfs_relative = true;
@@ -358,7 +360,7 @@ pub fn step9_update_esp(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
 /// Only modifies state if /var is NOT already a separate subvolume.
 /// Device ref and compression derived from root, not hardcoded.
 pub fn step10_separate_var(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
-    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
+    if !s.artifact_verified || !ax.rename_exchange_atomic_btrfs { return None; }
     let mut next = *s;
     if !s.var_is_subvol {
         next.var_is_subvol = true;
@@ -387,7 +389,7 @@ pub fn step10_separate_var(s: &SystemState, ax: &Axioms) -> Option<SystemState> 
 /// the structural invariants are unchanged.
 pub fn kernel_install(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
     if !s.artifact_verified
-        || !ax.rename_exchange_atomic
+        || !ax.rename_exchange_atomic_btrfs
         || !ax.kernel_install_dispatches_hooks { return None; }
     let mut next = *s;
     next.artifact_verified = false;
@@ -434,7 +436,7 @@ pub fn verify_artifact(s: &SystemState) -> SystemState {
 /// Requires artifact_verified == true.
 /// Without verification, the operation is refused.
 pub fn rollback(s: &SystemState, ax: &Axioms) -> Option<SystemState> {
-    if !s.artifact_verified || !ax.rename_exchange_atomic { return None; }
+    if !s.artifact_verified || !ax.rename_exchange_atomic_btrfs { return None; }
     let mut next = *s;
     next.root_subvol = SubvolId::Id259;
     next.default_subvol = SubvolId::Id259;
@@ -463,7 +465,8 @@ mod tests {
         grub_follows_btrfs_symlinks: true,
         grub_loadenv_requires_nocow: true,
         grub_skips_config_verification: true,
-        rename_exchange_atomic: true,
+        rename_exchange_atomic_btrfs: true,
+        rename_exchange_safe_vfat: true,
         syncfs_commits_transaction: true,
         kernel_subvol_overrides_default: true,
         systemd_fstab_fatal: true,
@@ -593,7 +596,8 @@ mod verification {
             grub_follows_btrfs_symlinks: kani::any(),
             grub_loadenv_requires_nocow: kani::any(),
             grub_skips_config_verification: kani::any(),
-            rename_exchange_atomic: kani::any(),
+            rename_exchange_atomic_btrfs: kani::any(),
+            rename_exchange_safe_vfat: kani::any(),
             syncfs_commits_transaction: kani::any(),
             kernel_subvol_overrides_default: kani::any(),
             systemd_fstab_fatal: kani::any(),
@@ -622,7 +626,8 @@ mod verification {
     #[kani::proof]
     fn migration_preserves_bootability() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         kani::assume(ax.grub_follows_esp_uuid);
         kani::assume(ax.grub_resolves_from_default_subvol);
         kani::assume(ax.grub_prefix_determines_config);
@@ -662,7 +667,8 @@ mod verification {
     #[kani::proof]
     fn only_correct_first_step_preserves_boots() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         kani::assume(ax.grub_follows_esp_uuid);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
@@ -689,7 +695,8 @@ mod verification {
     #[kani::proof]
     fn rollback_preserves_bootability() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         kani::assume(ax.grub_follows_esp_uuid);
         kani::assume(ax.grub_resolves_from_default_subvol);
         kani::assume(ax.grub_prefix_determines_config);
@@ -711,7 +718,8 @@ mod verification {
     #[kani::proof]
     fn kernel_install_preserves_bootability() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         kani::assume(ax.kernel_install_dispatches_hooks);
         kani::assume(ax.grub_follows_esp_uuid);
         kani::assume(ax.grub_resolves_from_default_subvol);
@@ -738,7 +746,8 @@ mod verification {
     #[kani::proof]
     fn all_steps_are_idempotent() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         kani::assume(ax.kernel_install_dispatches_hooks);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
@@ -776,7 +785,8 @@ mod verification {
     #[kani::proof]
     fn system_correct_under_grub_btrfs_constraint() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         kani::assume(ax.kernel_install_dispatches_hooks);
         kani::assume(ax.grub_follows_esp_uuid);
         kani::assume(ax.grub_resolves_from_default_subvol);
@@ -801,7 +811,8 @@ mod verification {
     #[kani::proof]
     fn all_swaps_require_verification() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         kani::assume(ax.kernel_install_dispatches_hooks);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
@@ -836,7 +847,7 @@ mod verification {
     #[kani::proof]
     fn creation_failure_preserves_bootability() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
         kani::assume(ax.grub_follows_esp_uuid);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
@@ -874,7 +885,8 @@ mod verification {
     #[kani::proof]
     fn step10_produces_consistent_var_config() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         let has_btrfs_rel: bool = kani::any();
         let dev = any_device_ref();
         let comp = any_compression();
@@ -894,7 +906,8 @@ mod verification {
     #[kani::proof]
     fn all_exit_points_are_reboot_safe() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         kani::assume(ax.kernel_install_dispatches_hooks);
         kani::assume(ax.syncfs_commits_transaction);
         kani::assume(ax.grub_follows_esp_uuid);
@@ -921,7 +934,8 @@ mod verification {
     #[kani::proof]
     fn data_safe_across_all_operations() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
+        kani::assume(ax.rename_exchange_safe_vfat);
         kani::assume(ax.kernel_install_dispatches_hooks);
         let has_btrfs_rel: bool = kani::any();
         let var_sep: bool = kani::any();
@@ -946,7 +960,7 @@ mod verification {
     #[kani::proof]
     fn setup_is_safe() {
         let ax = any_axioms();
-        kani::assume(ax.rename_exchange_atomic);
+        kani::assume(ax.rename_exchange_atomic_btrfs);
         kani::assume(ax.syncfs_commits_transaction);
         kani::assume(ax.grub_follows_esp_uuid);
         let has_btrfs_rel: bool = kani::any();
