@@ -6,7 +6,6 @@
 use std::fs;
 use std::path::Path;
 
-use crate::consts::{FSTAB_MOUNT_POINT, FSTAB_FSTYPE, FSTAB_OPTIONS};
 use crate::grub::GrubContext;
 use crate::parse;
 use crate::platform::FEDORA as P;
@@ -175,7 +174,7 @@ fn check_grub_config(root: &Path, grub: &GrubContext) -> Vec<CheckResult> {
          Kernel boot entries will not appear in the GRUB menu. \
          Regenerate with: sudo grub2-mkconfig -o {grub_cfg_path}")));
 
-    if grub.target_fstype == "btrfs" && grub.btrfs_relative {
+    if matches!(grub.target_fstype, tools::FsType::Btrfs) && grub.btrfs_relative {
         results.push(check_default_subvol_matches_root(&grub.linux_mount_point, root));
     }
 
@@ -185,14 +184,13 @@ fn check_grub_config(root: &Path, grub: &GrubContext) -> Vec<CheckResult> {
 fn check_default_subvol_matches_root(mount_point: &str, root: &Path) -> CheckResult {
     let default_id = tools::btrfs_subvol_get_default(mount_point)?;
 
-    let fstab = fs::read_to_string(root.join("etc/fstab"))
+    let fstab_content = fs::read_to_string(root.join("etc/fstab"))
         .map_err(|e| format!("Cannot read /etc/fstab: {e}"))?;
+    let lines = tools::parse_fstab(&fstab_content);
 
-    let root_subvol_name = fstab.lines()
-        .filter(|l| !l.trim().starts_with('#'))
-        .find(|l| l.split_whitespace().nth(FSTAB_MOUNT_POINT).is_some_and(|mp| mp == "/"))
-        .and_then(|l| l.split_whitespace().nth(FSTAB_OPTIONS))
-        .and_then(|opts| parse::extract_mount_option(opts, "subvol"));
+    let root_subvol_name = tools::fstab_entries(&lines).into_iter()
+        .find(|e| e.fs_file == "/")
+        .and_then(|e| parse::extract_mount_option(&e.fs_mntops, "subvol"));
 
     let root_subvol_name = match root_subvol_name {
         Some(name) => name,
@@ -299,17 +297,18 @@ fn validate_bls_entry(grub: &GrubContext, conf: &Path) -> Result<(), String> {
             "Boot entry {} has no 'options' field. \
              The kernel will not know which root filesystem to mount.", conf.display()))?;
 
-    let linux_path = linux.split_whitespace().next().unwrap_or(linux);
-    let initrd_path = initrd.split_whitespace().next().unwrap_or(initrd);
-
-    grub.check_path_exists(linux_path).map_err(|fact| format!(
+    // BLS spec: linux value is a single path.
+    // 90-loaderentry.install:215 confirms single path per field.
+    grub.check_path_exists(linux).map_err(|fact| format!(
         "GRUB cannot find the kernel ({fact}). \
          The system will not boot with this entry."))?;
-    grub.check_path_exists(initrd_path).map_err(|fact| format!(
+    grub.check_path_exists(initrd).map_err(|fact| format!(
         "GRUB cannot find the initial ramdisk ({fact}). \
          The kernel will panic during boot."))?;
 
-    if !options.contains("root=UUID=") && !options.contains("root=/dev/") {
+    // root= accepts UUID=, LABEL= (initramfs-resolved), PARTUUID=, PARTLABEL=,
+    // /dev/ paths (kernel early_lookup_bdev, block/early-lookup.c:244).
+    if !options.contains("root=") {
         return Err(format!(
             "Boot entry {} does not specify a root filesystem (missing root= parameter). \
              The kernel will not know what to mount.",
@@ -335,7 +334,7 @@ fn check_root_mountable(root: &Path) -> Vec<CheckResult> {
         }
     };
 
-    results.push(check_blkid_uuid_fstype(&root_uuid, "btrfs").map_err(|e| format!(
+    results.push(check_blkid_uuid_fstype(&root_uuid, tools::FsType::Btrfs).map_err(|e| format!(
         "Root filesystem UUID {root_uuid} is not a Btrfs partition: {e}. \
          This tool requires Btrfs as the root filesystem.")));
 
@@ -362,49 +361,28 @@ fn check_fstab_mounts(root: &Path) -> Vec<CheckResult> {
              systemd will not mount any filesystems."))],
     };
 
+    let lines = tools::parse_fstab(&content);
     let mut results = Vec::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+    for e in tools::fstab_entries(&lines) {
+        if e.fs_mntops.contains("nofail") || e.fs_vfstype == tools::FsType::Swap
+           || e.fs_file == "none" || e.fs_file == "swap" { continue; }
 
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 3 { continue; }
-
-        let (device, mount_point, fstype) = (parts[0], parts[FSTAB_MOUNT_POINT], parts[FSTAB_FSTYPE]);
-        let options = parts.get(FSTAB_OPTIONS).copied().unwrap_or("");
-
-        if options.contains("nofail") || fstype == "swap"
-           || mount_point == "none" || mount_point == "swap" { continue; }
-
-        results.push(check_fstab_entry(device, mount_point, fstype, options));
+        results.push(check_fstab_entry(&e.fs_spec, &e.fs_file, &e.fs_vfstype, &e.fs_mntops));
     }
 
     results
 }
 
-fn check_fstab_entry(device: &str, mount_point: &str, fstype: &str, options: &str) -> CheckResult {
-    let uuid = match device.strip_prefix("UUID=") {
-        Some(uuid) => uuid.to_string(),
-        None => {
-            if !std::path::Path::new(device).exists() {
-                return Err(format!(
-                    "Mount {mount_point}: device {device} does not exist. \
-                     systemd will fail to mount it and the system may hang at boot. \
-                     Check /etc/fstab or add 'nofail' to the mount options."));
-            }
-            return Ok(());
-        }
-    };
-
-    tools::blkid_device_for_uuid(&uuid)
+fn check_fstab_entry(device: &str, mount_point: &str, fstype: &tools::FsType, options: &str) -> CheckResult {
+    tools::resolve_fstab_device(device)
         .map_err(|_| format!(
-            "Mount {mount_point}: no disk found with UUID={uuid}. \
+            "Mount {mount_point}: device {device} does not resolve. \
              systemd will fail to mount it and the system may hang at boot. \
              Check /etc/fstab or add 'nofail' to the mount options."))?;
 
-    if fstype == "btrfs" {
+    if *fstype == tools::FsType::Btrfs {
         if let Some(subvol) = parse::extract_mount_option(options, "subvol") {
-            return check_btrfs_subvol_exists(&uuid, &subvol)
+            return check_btrfs_subvol_exists(device, &subvol)
                 .map_err(|_| format!(
                     "Mount {mount_point}: Btrfs subvolume '{subvol}' does not exist. \
                      systemd will fail to mount it and the system may hang at boot. \
@@ -433,20 +411,20 @@ fn check_file_contains(path: &Path, needle: &str, msg: &str) -> CheckResult {
     }
 }
 
-fn check_blkid_uuid_fstype(uuid: &str, expected: &str) -> CheckResult {
+fn check_blkid_uuid_fstype(uuid: &str, expected: tools::FsType) -> CheckResult {
     let fstype = tools::blkid_fstype(uuid)?;
     if fstype == expected { Ok(()) } else {
-        Err(format!("UUID={uuid} is {fstype}, expected {expected}"))
+        Err(format!("UUID={uuid} has unexpected filesystem type"))
     }
 }
 
-fn check_btrfs_subvol_exists(uuid: &str, name: &str) -> CheckResult {
-    let mount = tools::get_mount_point(uuid)?;
-    let list = tools::btrfs_subvol_list(mount.path())?;
-    if list.lines().any(|l| l.split_whitespace().last().is_some_and(|n| n == name)) {
+fn check_btrfs_subvol_exists(device_spec: &str, name: &str) -> CheckResult {
+    let mount = tools::get_mount_point(device_spec)?;
+    let entries = tools::btrfs_subvol_list(mount.path())?;
+    if entries.iter().any(|e| e.path == name) {
         Ok(())
     } else {
-        Err(format!("subvolume '{name}' not found on UUID={uuid}"))
+        Err(format!("subvolume '{name}' not found on {device_spec}"))
     }
 }
 

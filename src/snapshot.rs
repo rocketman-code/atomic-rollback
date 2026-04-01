@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::consts::{DEFAULT_SNAPSHOT_NAME, FSTAB_OPTIONS};
+use crate::consts::DEFAULT_SNAPSHOT_NAME;
 use crate::{parse, tools};
 
 /// Creates a snapshot of the root subvolume at the btrfs top level.
@@ -29,15 +29,11 @@ pub fn snapshot(name: Option<&str>) -> Result<String, String> {
 /// Returns top-level subvolume names, excluding fstab system subvolumes.
 pub fn list() -> Result<Vec<String>, String> {
     let protected = fstab_subvol_names()?;
-    let output = tools::btrfs_subvol_list("/")?;
-    let mut snapshots = Vec::new();
-    for line in output.lines() {
-        if let Some(name) = line.split_whitespace().last() {
-            if !protected.contains(&name.to_string()) {
-                snapshots.push(name.to_string());
-            }
-        }
-    }
+    let entries = tools::btrfs_subvol_list("/")?;
+    let mut snapshots: Vec<String> = entries.iter()
+        .filter(|e| !protected.contains(&e.path))
+        .map(|e| e.path.clone())
+        .collect();
     snapshots.sort();
     Ok(snapshots)
 }
@@ -59,26 +55,23 @@ pub fn delete(name: &str) -> Result<(), String> {
 
 // System subvolumes from fstab. These must never be deleted.
 fn fstab_subvol_names() -> Result<Vec<String>, String> {
-    let fstab = fs::read_to_string("/etc/fstab")
+    let content = fs::read_to_string("/etc/fstab")
         .map_err(|e| format!("Cannot read /etc/fstab: {e}"))?;
-    Ok(fstab.lines()
-        .filter(|l| !l.trim().starts_with('#'))
-        .filter_map(|l| l.split_whitespace().nth(FSTAB_OPTIONS))
-        .filter_map(|opts| parse::extract_mount_option(opts, "subvol"))
+    let lines = tools::parse_fstab(&content);
+    Ok(tools::fstab_entries(&lines).into_iter()
+        .filter_map(|e| parse::extract_mount_option(&e.fs_mntops, "subvol"))
         .map(|s| s.to_string())
         .collect())
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::consts::FSTAB_OPTIONS;
-    use crate::parse;
+    use crate::{parse, tools};
 
     fn fstab_subvol_names_from(fstab: &str) -> Vec<String> {
-        fstab.lines()
-            .filter(|l| !l.trim().starts_with('#'))
-            .filter_map(|l| l.split_whitespace().nth(FSTAB_OPTIONS))
-            .filter_map(|opts| parse::extract_mount_option(opts, "subvol"))
+        let lines = tools::parse_fstab(fstab);
+        tools::fstab_entries(&lines).into_iter()
+            .filter_map(|e| parse::extract_mount_option(&e.fs_mntops, "subvol"))
             .map(|s| s.to_string())
             .collect()
     }

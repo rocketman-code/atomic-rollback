@@ -12,7 +12,7 @@ use crate::tools;
 /// Captures how GRUB resolves paths on the target filesystem.
 /// Used by check.rs to verify that GRUB can find kernels and configs.
 pub struct GrubContext {
-    pub target_fstype: String,
+    pub target_fstype: tools::FsType,
     pub btrfs_relative: bool,
     pub linux_mount_point: String,
     // Never read directly. Present so that MountPoint::Probed is
@@ -28,22 +28,15 @@ impl GrubContext {
         let esp_cfg = root.join(&P.esp_dir[1..]).join("grub.cfg");
         let content = fs::read_to_string(&esp_cfg)
             .map_err(|e| format!("cannot read ESP grub.cfg: {e}"))?;
+        let stub = tools::parse_esp_stub(&content)?;
 
-        let target_uuid = content.lines()
-            .find(|l| l.contains("search") && l.contains("--fs-uuid"))
-            .and_then(|l| l.split_whitespace().last())
-            .map(|s| s.to_string())
-            .ok_or("ESP grub.cfg: cannot determine target UUID")?;
+        let target_fstype = tools::blkid_fstype(&stub.boot_uuid)
+            .unwrap_or(tools::FsType::Other("unknown".into()));
 
-        let btrfs_relative = content.lines()
-            .any(|l| l.contains("btrfs_relative_path") && l.contains("yes"));
-
-        let target_fstype = tools::blkid_fstype(&target_uuid).unwrap_or_default();
-
-        let mount = tools::get_mount_point(&target_uuid)?;
+        let mount = tools::get_mount_point(&format!("UUID={}", stub.boot_uuid))?;
         let linux_mount_point = mount.path().to_string();
 
-        Ok(Self { target_fstype, btrfs_relative, linux_mount_point, _mount: Some(mount) })
+        Ok(Self { target_fstype, btrfs_relative: stub.btrfs_relative, linux_mount_point, _mount: Some(mount) })
     }
 
     /// Builds a context for verifying a snapshot before rollback.
@@ -53,21 +46,14 @@ impl GrubContext {
         let esp_cfg = Path::new(P.esp_dir).join("grub.cfg");
         let content = fs::read_to_string(esp_cfg)
             .map_err(|e| format!("cannot read ESP grub.cfg: {e}"))?;
+        let stub = tools::parse_esp_stub(&content)?;
 
-        let target_uuid = content.lines()
-            .find(|l| l.contains("search") && l.contains("--fs-uuid"))
-            .and_then(|l| l.split_whitespace().last())
-            .map(|s| s.to_string())
-            .ok_or("ESP grub.cfg: cannot determine target UUID")?;
-
-        let btrfs_relative = content.lines()
-            .any(|l| l.contains("btrfs_relative_path") && l.contains("yes"));
-
-        let target_fstype = tools::blkid_fstype(&target_uuid).unwrap_or_default();
+        let target_fstype = tools::blkid_fstype(&stub.boot_uuid)
+            .unwrap_or(tools::FsType::Other("unknown".into()));
 
         let linux_mount_point = snapshot_root.to_string_lossy().to_string();
 
-        Ok(Self { target_fstype, btrfs_relative, linux_mount_point, _mount: None })
+        Ok(Self { target_fstype, btrfs_relative: stub.btrfs_relative, linux_mount_point, _mount: None })
     }
 
     /// Translates a GRUB path to a Linux filesystem path.

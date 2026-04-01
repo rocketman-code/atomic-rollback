@@ -93,10 +93,12 @@ fn fix_bls_paths(kver: &str) -> Result<(), String> {
     let content = fs::read_to_string(&bls_path)
         .map_err(|e| format!("read {}: {e}", bls_path.display()))?;
 
+    let bls_lines = tools::parse_bls(&content);
+
     // Only fix if the paths are wrong (contain /root/boot/ or /boot/ prefix)
-    let needs_fix = content.lines().any(|l| {
-        (l.starts_with("linux ") || l.starts_with("initrd "))
-            && (l.contains("/root/boot/") || l.contains("/boot/vmlinuz-") || l.contains("/boot/initramfs-"))
+    let needs_fix = tools::bls_fields(&bls_lines).iter().any(|(key, value)| {
+        (*key == "linux" || *key == "initrd")
+            && (value.contains("/root/boot/") || value.contains("/boot/vmlinuz-") || value.contains("/boot/initramfs-"))
     });
 
     if !needs_fix {
@@ -111,19 +113,18 @@ fn fix_bls_paths(kver: &str) -> Result<(), String> {
     let new_path = bls_dir.join(&new_name);
     let _ = fs::remove_file(&new_path); // Clean up any leftover from interrupted run
 
-    let new_content: String = content.lines()
-        .map(|line| {
-            if line.starts_with("linux ") {
-                format!("linux {linux_path}")
-            } else if line.starts_with("initrd ") {
-                if line.contains("$tuned_initrd") {
-                    format!("initrd {initrd_path} $tuned_initrd")
+    let new_content: String = bls_lines.iter()
+        .map(|line| match line {
+            tools::BlsLine::Field { key, value, prefix } if key == "linux" =>
+                format!("{prefix}{linux_path}"),
+            tools::BlsLine::Field { key, value, prefix } if key == "initrd" => {
+                if value.contains("$tuned_initrd") {
+                    format!("{prefix}{initrd_path} $tuned_initrd")
                 } else {
-                    format!("initrd {initrd_path}")
+                    format!("{prefix}{initrd_path}")
                 }
-            } else {
-                line.to_string()
             }
+            _ => line.raw(),
         })
         .collect::<Vec<_>>()
         .join("\n");

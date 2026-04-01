@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, FSTAB_MOUNT_POINT, FSTAB_FSTYPE, FSTAB_OPTIONS, TOPLEVEL_MOUNT};
+use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, TOPLEVEL_MOUNT};
 use crate::{check, platform::FEDORA as P, swap, tools};
 
 /// Delegates to mount(1) which resolves the device from fstab.
@@ -94,17 +94,13 @@ fn step1_ensure_boot_on_btrfs() -> Result<(), String> {
         let old_boot = "/mnt/old-boot";
         fs::create_dir_all(old_boot)
             .map_err(|e| format!("mkdir {old_boot}: {e}"))?;
-        let fstab = fs::read_to_string("/etc/fstab").map_err(|e| format!("read fstab: {e}"))?;
-        let boot_device_field = fstab.lines()
-            .filter(|l| !l.trim().starts_with('#'))
-            .find(|l| {
-                let parts: Vec<&str> = l.split_whitespace().collect();
-                parts.len() >= 2 && parts[FSTAB_MOUNT_POINT] == "/boot" && parts.get(FSTAB_FSTYPE).is_some_and(|t| *t == "ext4")
-            })
-            .and_then(|l| l.split_whitespace().next())
+        let fstab_content = fs::read_to_string("/etc/fstab").map_err(|e| format!("read fstab: {e}"))?;
+        let fstab_lines = tools::parse_fstab(&fstab_content);
+        let boot_entry = tools::fstab_entries(&fstab_lines).into_iter()
+            .find(|e| e.fs_file == "/boot" && e.fs_vfstype == tools::FsType::Ext4)
             .ok_or("cannot find ext4 /boot in fstab")?;
 
-        let device = tools::resolve_fstab_device(boot_device_field)?;
+        let device = tools::resolve_fstab_device(&boot_entry.fs_spec)?;
         tools::mount_ro(&device, old_boot)?;
         tools::rsync(&format!("{old_boot}/"), "/boot/")?;
         tools::umount(old_boot)?;
@@ -189,16 +185,12 @@ fn step5_update_fstab() -> Result<(), String> {
     let content = fs::read_to_string("/etc/fstab")
         .map_err(|e| format!("read fstab: {e}"))?;
 
-    let new_content: String = content.lines()
-        .map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 && parts[FSTAB_MOUNT_POINT] == "/boot" && parts[FSTAB_FSTYPE] == "ext4"
-               && !line.trim().starts_with('#')
-            {
-                format!("#MIGRATED: {line}")
-            } else {
-                line.to_string()
-            }
+    let new_content: String = tools::parse_fstab(&content).iter()
+        .map(|line| match line {
+            tools::FstabLine::Entry(e)
+                if e.fs_file == "/boot" && e.fs_vfstype == tools::FsType::Ext4 =>
+                format!("#MIGRATED: {}", e.raw),
+            _ => line.raw().to_string(),
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -255,99 +247,43 @@ fn step9_update_esp() -> Result<(), String> {
     let esp_cfg_new = format!("{}/grub.cfg.new", P.esp_dir);
     remove_stale(&esp_cfg_new);
 
-    // UUID for the filesystem containing /boot, from grub2-probe.
-    let new_uuid = tools::run_stdout("grub2-probe", &["--target=fs_uuid", "/boot"])?;
-
-    // Read the existing ESP grub.cfg. Preserve its format, variables, and flags.
-    // Only substitute the UUID and add btrfs_relative_path if needed.
+    // Parse the existing ESP grub.cfg contract.
     let existing = fs::read_to_string(&esp_cfg)
         .map_err(|e| format!("read {esp_cfg}: {e}"))?;
+    let old_stub = tools::parse_esp_stub(&existing)?;
 
-    // Apply the two transformations required by the ext4→Btrfs transition:
-    // 1. Replace the UUID (ext4 → Btrfs)
-    // 2. Add btrfs_relative_path="yes" if not present (required for GRUB on Btrfs)
-    // Everything else is preserved exactly as the package installed it.
+    // New UUID for the filesystem containing /boot (Btrfs after migration).
+    let new_uuid = tools::run_stdout("grub2-probe", &["--target=fs_uuid", "/boot"])?;
 
-    let has_btrfs_relative = existing.lines()
-        .any(|l| l.contains("btrfs_relative_path"));
-
-    // On ext4, GRUB prefix is /grub2 (partition-relative).
-    // On Btrfs with default subvol, it needs /boot/grub2.
-    // The !contains(&full_grub) guards prevent double-prefixing
-    // (/boot/grub2 -> /boot/boot/grub2) on re-run.
+    // Derive the new grub_dir: on Btrfs with default subvol, prefix is /boot/grub2.
     let grub_basename = Path::new(P.grub_dir).file_name()
         .and_then(|n| n.to_str()).unwrap_or("grub2");
-    let short_grub = format!("/{grub_basename}");
-    let full_grub = format!("/boot/{grub_basename}");
+    let new_grub_dir = format!("/boot/{grub_basename}");
 
-    let mut lines: Vec<String> = existing.lines()
-        .map(|line| {
-            if line.contains("--fs-uuid") {
-                let mut parts: Vec<&str> = line.split_whitespace().collect();
-                if let Some(last) = parts.last_mut() {
-                    *last = &new_uuid;
-                }
-                let indent = &line[..line.len() - line.trim_start().len()];
-                format!("{indent}{}", parts.join(" "))
-            } else if line.contains("prefix=") && line.contains(&short_grub)
-                      && !line.contains(&full_grub) {
-                line.replace(&short_grub, &full_grub)
-            } else if line.contains("configfile") && line.contains(&short_grub)
-                      && !line.contains(&full_grub) {
-                line.replace(&short_grub, &full_grub)
-            } else {
-                line.to_string()
-            }
-        })
-        .collect();
-
-    if !has_btrfs_relative {
-        // Insert before the search line. GRUB needs it set before resolving paths.
-        let search_idx = lines.iter().position(|l| l.contains("--fs-uuid")).unwrap_or(0);
-        lines.insert(search_idx, "set btrfs_relative_path=\"yes\"".to_string());
-    }
-
-    let new_cfg = lines.join("\n");
-
-    // Add trailing newline if original had one
-    let new_cfg = if existing.ends_with('\n') && !new_cfg.ends_with('\n') {
-        new_cfg + "\n"
-    } else {
-        new_cfg
-    };
-
-    println!("  Old UUID: {}", existing.lines()
-        .find(|l| l.contains("--fs-uuid"))
-        .and_then(|l| l.split_whitespace().last())
-        .unwrap_or("?"));
+    println!("  Old UUID: {}", old_stub.boot_uuid);
     println!("  New UUID: {new_uuid}");
+
+    // Modify contract, render from template, write.
+    let new_stub = tools::EspStub {
+        boot_uuid: new_uuid.clone(),
+        grub_dir: new_grub_dir,
+        btrfs_relative: true,
+    };
+    let new_cfg = tools::render_esp_stub(&new_stub);
 
     fs::write(&esp_cfg_new, &new_cfg)
         .map_err(|e| format!("write {esp_cfg_new}: {e}"))?;
 
-    // Verify the new ESP grub.cfg before swap: correct UUID,
-    // btrfs_relative_path set, prefix includes /boot.
-    if !new_cfg.contains(&new_uuid) {
+    // Verify round-trip: parse what we just rendered.
+    let verified = tools::parse_esp_stub(&new_cfg).map_err(|e| {
+        let _ = fs::remove_file(&esp_cfg_new);
+        format!("ESP grub.cfg.new failed to parse: {e}. Old ESP preserved.")
+    })?;
+    if verified.boot_uuid != new_uuid {
         let _ = fs::remove_file(&esp_cfg_new);
         return Err(format!(
-            "ESP grub.cfg.new does not contain the target UUID {new_uuid}. \
-             Substitution failed. Old ESP preserved."));
-    }
-    if !new_cfg.lines().any(|l| l.contains("btrfs_relative_path") && l.contains("yes")) {
-        let _ = fs::remove_file(&esp_cfg_new);
-        return Err(
-            "ESP grub.cfg.new missing btrfs_relative_path. \
-             GRUB will not resolve paths from the default subvolume. \
-             Old ESP preserved.".into());
-    }
-    if !new_cfg.lines().any(|l|
-        (l.contains("prefix=") || l.contains("configfile")) && l.contains(&full_grub))
-    {
-        let _ = fs::remove_file(&esp_cfg_new);
-        return Err(format!(
-            "ESP grub.cfg.new missing {full_grub} in prefix or configfile path. \
-             GRUB will not find the main configuration. \
-             Old ESP preserved."));
+            "ESP grub.cfg.new has UUID {} but expected {new_uuid}. Old ESP preserved.",
+            verified.boot_uuid));
     }
 
     swap::rename_exchange(Path::new(P.esp_dir), "grub.cfg", "grub.cfg.new")?;
@@ -369,16 +305,12 @@ fn step10_separate_var() -> Result<(), String> {
 
     // Read root mount info from fstab. Derive /var entry from it.
     let (device, fstab) = tools::root_device()?;
-    let root_line = fstab.lines()
-        .filter(|l| !l.trim().starts_with('#'))
-        .find(|l| l.split_whitespace().nth(FSTAB_MOUNT_POINT).is_some_and(|mp| mp == "/"))
+    let fstab_lines = tools::parse_fstab(&fstab);
+    let root_entry = tools::fstab_entries(&fstab_lines).into_iter()
+        .find(|e| e.fs_file == "/")
         .ok_or("cannot find root entry in fstab")?;
-    let root_device_field = root_line.split_whitespace().next()
-        .ok_or("fstab root entry has no device field")?
-        .to_string();
-    let root_options = root_line.split_whitespace().nth(FSTAB_OPTIONS)
-        .ok_or("fstab root entry has no options field")?
-        .to_string();
+    let root_device_field = root_entry.fs_spec.clone();
+    let root_options = root_entry.fs_mntops.clone();
 
     // Mount top-level to create the new subvolume alongside root and home
     let toplevel = TOPLEVEL_MOUNT;
