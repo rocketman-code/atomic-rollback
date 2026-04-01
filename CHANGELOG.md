@@ -2,6 +2,18 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.3.1] - 2026-03-31
+
+### Fixed
+
+- Kernel-install hook uses full binary path (/usr/bin/atomic-rollback). The bare command was not in RPM's scriptlet PATH, causing exit 127 on kernel upgrades.
+- RPM spec rewritten for COPR vendored builds. The previous spec used %cargo_build which expects Fedora-packaged crates.
+- COPR Makefile builds from cloned source with correct outdir contract.
+
+### Changed
+
+- Installation via COPR is the only supported method. The crate was removed from crates.io (binary alone is insufficient without the hook and plugin).
+
 ## [0.3.0] - 2026-03-30
 
 ### Added
