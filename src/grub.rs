@@ -10,6 +10,7 @@ pub struct GrubContext {
     pub target_fstype: String,
     pub btrfs_relative: bool,
     pub linux_mount_point: String,
+    _mount: Option<tools::MountPoint>,
 }
 
 impl GrubContext {
@@ -31,12 +32,8 @@ impl GrubContext {
 
         let mount = tools::get_mount_point(&target_uuid)?;
         let linux_mount_point = mount.path().to_string();
-        // Keep mount alive for the lifetime of this context, but MountPoint
-        // drops on scope exit. For probed mounts we need to hold the handle.
-        // For now, we leak the probed mount intentionally (cleanup on exit).
-        std::mem::forget(mount);
 
-        Ok(Self { target_fstype, btrfs_relative, linux_mount_point })
+        Ok(Self { target_fstype, btrfs_relative, linux_mount_point, _mount: Some(mount) })
     }
 
     /// Build context for verifying a snapshot before rollback.
@@ -60,7 +57,7 @@ impl GrubContext {
 
         let linux_mount_point = snapshot_root.to_string_lossy().to_string();
 
-        Ok(Self { target_fstype, btrfs_relative, linux_mount_point })
+        Ok(Self { target_fstype, btrfs_relative, linux_mount_point, _mount: None })
     }
 
     /// Resolve a GRUB path to a Linux filesystem path.
