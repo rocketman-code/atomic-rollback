@@ -195,10 +195,14 @@ fn find_root_uuid(options: &[u8], prefix: &[u8]) -> (result: Option<(usize, usiz
 
 // BLS entry format (Boot Loader Specification, systemd.io/BOOT_LOADER_SPECIFICATION):
 // Lines of "key<whitespace>value". Lines starting with # are comments.
-// Returns the byte range of the trimmed value for a given key.
-fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
+// initrd may appear on multiple lines (BLS spec).
+// GRUB stores everything after the first delimiter as the value
+// (blsuki.c:316, grub_strtok_r with " \t").
+// Returns the byte range of the trimmed value for the first match at or after start.
+fn find_field(content: &[u8], key: &[u8], start: usize) -> (result: Option<(usize, usize)>)
     requires
         key@.len() + content@.len() <= usize::MAX as int,
+        start <= content@.len(),
     ensures
         match result {
             Some((s, e)) => {
@@ -213,7 +217,7 @@ fn find_field(content: &[u8], key: &[u8]) -> (result: Option<(usize, usize)>)
     if key.len() == 0 {
         return None;
     }
-    let mut i: usize = 0;
+    let mut i: usize = start;
     while i < content.len()
         invariant
             i <= content@.len(),
@@ -311,29 +315,42 @@ pub fn extract_root_uuid_from_options<'a>(options: &'a str) -> Option<&'a str> {
     Some(&options[s..e])
 }
 
-/// Extracts a field value from a BLS entry.
+/// Extracts the first value for a field from a BLS entry.
 /// Format: lines of "key value". Comments (#) and leading whitespace skipped.
 /// Trailing whitespace and \r trimmed from values.
+/// For multi-valued fields (initrd), use bls_field_all.
 pub fn bls_field<'a>(content: &'a str, key: &str) -> Option<&'a str> {
-    let (s, e) = find_field(content.as_bytes(), key.as_bytes())?;
+    let (s, e) = find_field(content.as_bytes(), key.as_bytes(), 0)?;
     Some(&content[s..e])
 }
 
-/// Parses all recognized fields from a BLS entry into a map.
-/// BLS fields per systemd.io/BOOT_LOADER_SPECIFICATION:
-///   title, version, linux, initrd, options
-/// GRUB extensions (from grub.cfg 10_linux):
-///   grub_users, grub_arg, grub_class
-pub fn parse_bls_fields(content: &str) -> std::collections::HashMap<String, String> {
-    let mut fields = std::collections::HashMap::new();
-    for key in &["title", "version", "linux", "initrd", "options",
-                 "grub_users", "grub_arg", "grub_class"] {
-        if let Some(val) = bls_field(content, key) {
-            fields.insert(key.to_string(), val.to_string());
+/// Extracts ALL values for a field from a BLS entry.
+/// initrd may appear on multiple lines per BLS spec.
+/// Each call to find_field is Verus-verified; iteration advances
+/// past the previous match.
+pub fn bls_field_all<'a>(content: &'a str, key: &str) -> Vec<&'a str> {
+    let bytes = content.as_bytes();
+    let key_bytes = key.as_bytes();
+    let mut results = Vec::new();
+    let mut pos = 0;
+    while pos <= bytes.len() {
+        match find_field(bytes, key_bytes, pos) {
+            Some((s, e)) => {
+                results.push(&content[s..e]);
+                // Advance past the end of this match's line
+                pos = if e < bytes.len() {
+                    bytes[e..].iter().position(|&b| b == b'\n')
+                        .map_or(bytes.len(), |nl| e + nl + 1)
+                } else {
+                    bytes.len() + 1
+                };
+            }
+            None => break,
         }
     }
-    fields
+    results
 }
+
 
 #[cfg(test)]
 mod tests {

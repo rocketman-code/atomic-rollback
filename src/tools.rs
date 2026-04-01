@@ -502,14 +502,6 @@ pub fn parse_bls(content: &str) -> Vec<BlsLine> {
         .collect()
 }
 
-/// Returns only the fields from parsed BLS lines.
-pub fn bls_fields(lines: &[BlsLine]) -> Vec<(&str, &str)> {
-    lines.iter().filter_map(|l| match l {
-        BlsLine::Field { key, value, .. } => Some((key.as_str(), value.as_str())),
-        _ => None,
-    }).collect()
-}
-
 // --- probe mount: mount a device temporarily if not already mounted ---
 
 /// Accepts any fstab device spec (UUID=, LABEL=, PARTUUID=, PARTLABEL=,

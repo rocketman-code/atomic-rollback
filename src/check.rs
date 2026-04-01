@@ -282,29 +282,36 @@ fn validate_bls_entry(grub: &GrubContext, conf: &Path) -> Result<(), String> {
     let content = fs::read_to_string(conf)
         .map_err(|e| format!("Cannot read boot entry {}: {e}", conf.display()))?;
 
-    let fields = parse::parse_bls_fields(&content);
-
-    let linux = fields.get("linux")
+    let linux = parse::bls_field(&content, "linux")
         .ok_or_else(|| format!(
             "Boot entry {} has no 'linux' field. \
              GRUB does not know which kernel to load.", conf.display()))?;
-    let initrd = fields.get("initrd")
-        .ok_or_else(|| format!(
-            "Boot entry {} has no 'initrd' field. \
-             The kernel will panic without an initial ramdisk.", conf.display()))?;
-    let options = fields.get("options")
+    let options = parse::bls_field(&content, "options")
         .ok_or_else(|| format!(
             "Boot entry {} has no 'options' field. \
              The kernel will not know which root filesystem to mount.", conf.display()))?;
 
-    // BLS spec: linux value is a single path.
-    // 90-loaderentry.install:215 confirms single path per field.
     grub.check_path_exists(linux).map_err(|fact| format!(
         "GRUB cannot find the kernel ({fact}). \
          The system will not boot with this entry."))?;
-    grub.check_path_exists(initrd).map_err(|fact| format!(
-        "GRUB cannot find the initial ramdisk ({fact}). \
-         The kernel will panic during boot."))?;
+
+    // initrd may appear on multiple lines (BLS spec). Each value may contain
+    // GRUB variables ($tuned_initrd) which are resolved at boot, not checkable here.
+    // GRUB stores everything after the first delimiter as the value (blsuki.c:316).
+    let initrd_values = parse::bls_field_all(&content, "initrd");
+    if initrd_values.is_empty() {
+        return Err(format!(
+            "Boot entry {} has no 'initrd' field. \
+             The kernel will panic without an initial ramdisk.", conf.display()));
+    }
+    for initrd_val in &initrd_values {
+        for path in initrd_val.split_whitespace() {
+            if path.starts_with('$') { continue; } // GRUB variable
+            grub.check_path_exists(path).map_err(|fact| format!(
+                "GRUB cannot find the initial ramdisk ({fact}). \
+                 The kernel will panic during boot."))?;
+        }
+    }
 
     // root= accepts UUID=, LABEL= (initramfs-resolved), PARTUUID=, PARTLABEL=,
     // /dev/ paths (kernel early_lookup_bdev, block/early-lookup.c:244).
@@ -433,8 +440,7 @@ fn extract_root_uuid(root: &Path) -> Option<String> {
     for entry in fs::read_dir(&entries_dir).ok()?.flatten() {
         if entry.path().extension().is_some_and(|ext| ext == "conf") {
             let content = fs::read_to_string(entry.path()).ok()?;
-            let fields = parse::parse_bls_fields(&content);
-            if let Some(options) = fields.get("options") {
+            if let Some(options) = parse::bls_field(&content, "options") {
                 return parse::extract_root_uuid_from_options(options).map(|s| s.to_string());
             }
         }

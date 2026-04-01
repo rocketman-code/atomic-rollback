@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::{check, platform::FEDORA as P, swap, tools};
+use crate::{check, parse, platform::FEDORA as P, swap, tools};
 
 /// Dispatched by /usr/lib/kernel/install.d/90-atomic-rollback.install.
 /// Only acts when root is btrfs and /boot is not a separate mount
@@ -93,13 +93,16 @@ fn fix_bls_paths(kver: &str) -> Result<(), String> {
     let content = fs::read_to_string(&bls_path)
         .map_err(|e| format!("read {}: {e}", bls_path.display()))?;
 
-    let bls_lines = tools::parse_bls(&content);
+    // Correctness decision via verified parser (get half of the lens).
+    // linux is single-valued, initrd may appear multiple times (BLS spec).
+    let has_bad_path = |v: &str| -> bool {
+        v.contains("/root/boot/") || v.contains("/boot/vmlinuz-") || v.contains("/boot/initramfs-")
+    };
+    let needs_fix = parse::bls_field(&content, "linux").is_some_and(|v| has_bad_path(v))
+        || parse::bls_field_all(&content, "initrd").iter().any(|v| has_bad_path(v));
 
-    // Only fix if the paths are wrong (contain /root/boot/ or /boot/ prefix)
-    let needs_fix = tools::bls_fields(&bls_lines).iter().any(|(key, value)| {
-        (*key == "linux" || *key == "initrd")
-            && (value.contains("/root/boot/") || value.contains("/boot/vmlinuz-") || value.contains("/boot/initramfs-"))
-    });
+    // Line structure for transformation (put half of the lens).
+    let bls_lines = tools::parse_bls(&content);
 
     if !needs_fix {
         return Ok(());
