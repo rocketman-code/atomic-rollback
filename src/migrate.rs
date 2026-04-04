@@ -253,15 +253,17 @@ fn step9_update_esp() -> Result<(), String> {
     let old_stub = tools::parse_esp_stub(&existing)?;
 
     // New UUID for the filesystem containing /boot (Btrfs after migration).
-    let new_uuid = tools::run_stdout("grub2-probe", &["--target=fs_uuid", "/boot"])?;
+    let new_uuid = tools::BareUuid::new(
+        tools::run_stdout("grub2-probe", &["--target=fs_uuid", "/boot"])?,
+    );
 
     // Derive the new grub_dir: on Btrfs with default subvol, prefix is /boot/grub2.
     let grub_basename = Path::new(P.grub_dir).file_name()
         .and_then(|n| n.to_str()).unwrap_or("grub2");
     let new_grub_dir = format!("/boot/{grub_basename}");
 
-    println!("  Old UUID: {}", old_stub.boot_uuid);
-    println!("  New UUID: {new_uuid}");
+    println!("  Old UUID: {}", old_stub.boot_uuid.as_str());
+    println!("  New UUID: {}", new_uuid.as_str());
 
     // Modify contract, render from template, write.
     let new_stub = tools::EspStub {
@@ -279,11 +281,11 @@ fn step9_update_esp() -> Result<(), String> {
         let _ = fs::remove_file(&esp_cfg_new);
         format!("ESP grub.cfg.new failed to parse: {e}. Old ESP preserved.")
     })?;
-    if verified.boot_uuid != new_uuid {
+    if verified.boot_uuid.as_str() != new_uuid.as_str() {
         let _ = fs::remove_file(&esp_cfg_new);
         return Err(format!(
-            "ESP grub.cfg.new has UUID {} but expected {new_uuid}. Old ESP preserved.",
-            verified.boot_uuid));
+            "ESP grub.cfg.new has UUID {} but expected {}. Old ESP preserved.",
+            verified.boot_uuid.as_str(), new_uuid.as_str()));
     }
 
     swap::rename_exchange(Path::new(P.esp_dir), "grub.cfg", "grub.cfg.new")?;
