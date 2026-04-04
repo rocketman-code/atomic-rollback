@@ -9,8 +9,8 @@ use std::fs;
 use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, PROBE_MOUNT_PREFIX, TOPLEVEL_MOUNT};
 
 /// Bare filesystem UUID extracted from BLS boot entries or grub2-probe.
-/// Not a device spec -- must be converted via into_device_spec() before
-/// passing to resolve_fstab_device or get_mount_point.
+/// Convert via into_device_spec() before passing to resolve_fstab_device
+/// or get_mount_point.
 #[derive(Debug, Clone)]
 pub struct BareUuid(String);
 
