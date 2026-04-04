@@ -2,6 +2,12 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.3.3] - 2026-04-03
+
+### Fixed
+
+- `check` failed on vanilla Fedora 43 with "Can't lookup blockdev." The root UUID extracted from BLS boot entries was passed to mount without the `UUID=` prefix, so mount received a bare UUID string instead of a valid device spec. All stock Fedora installs using `UUID=` in fstab were affected.
+
 ## [0.3.2] - 2026-04-01
 
 ### Fixed
