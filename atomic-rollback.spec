@@ -1,5 +1,5 @@
 Name:           atomic-rollback
-Version:        0.3.3
+Version:        0.3.4
 Release:        1%{?dist}
 Summary:        Atomic system rollback for Fedora via Btrfs RENAME_EXCHANGE
 

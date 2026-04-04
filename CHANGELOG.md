@@ -2,6 +2,16 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.3.4] - 2026-04-03
+
+### Changed
+
+- License changed from MIT OR Apache-2.0 to GPL-3.0-only. All future versions of this project are licensed under the GNU General Public License v3.0 only. Previously published versions (0.3.3 and earlier) remain under their original license. See LICENSE for the full text.
+
+### Removed
+
+- `scripts/monitor-reddit.sh` (one-time utility, not part of the distributed package).
+
 ## [0.3.3] - 2026-04-03
 
 ### Fixed
