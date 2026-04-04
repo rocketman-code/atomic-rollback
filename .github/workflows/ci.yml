@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  x86_64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lima-vm/lima-actions/setup@v1
+        id: lima
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/lima
+          key: lima-fedora-43-x86_64-${{ steps.lima.outputs.version }}
+      - name: Start Fedora VM
+        run: limactl start --name=default --cpus=2 --memory=2 template:fedora-43
+      - name: Build and check
+        run: |
+          lima sudo dnf install -y rust cargo gcc git
+          lima git clone --depth 1 --branch $GITHUB_HEAD_REF https://github.com/$GITHUB_REPOSITORY.git /tmp/ar
+          lima bash -c "cd /tmp/ar && cargo build --release"
+          lima sudo /tmp/ar/target/release/atomic-rollback check
+
+  aarch64-cross:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross toolchain
+        run: sudo apt-get update -q && sudo apt-get install -y -q gcc-aarch64-linux-gnu
+      - name: Cross-compile
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          mkdir -p .cargo
+          printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n' > .cargo/config.toml
+          cargo build --release --target aarch64-unknown-linux-gnu
+          file target/aarch64-unknown-linux-gnu/release/atomic-rollback
