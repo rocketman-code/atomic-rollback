@@ -310,9 +310,9 @@ pub fn extract_mount_option<'a>(options: &'a str, key: &str) -> Option<&'a str> 
 
 /// Extracts the root filesystem UUID from kernel cmdline options.
 /// Looks for "root=UUID=<value>" in whitespace-separated tokens.
-pub fn extract_root_uuid_from_options<'a>(options: &'a str) -> Option<&'a str> {
+pub fn extract_root_uuid_from_options(options: &str) -> Option<crate::tools::BareUuid> {
     let (s, e) = find_root_uuid(options.as_bytes(), ROOT_PREFIX)?;
-    Some(&options[s..e])
+    Some(crate::tools::BareUuid::new(options[s..e].to_string()))
 }
 
 /// Extracts the first value for a field from a BLS entry.
@@ -371,15 +371,20 @@ mod tests {
 
     #[test]
     fn root_uuid_basic() {
-        assert_eq!(extract_root_uuid_from_options("root=UUID=abc-123 ro rhgb"), Some("abc-123"));
-        assert_eq!(extract_root_uuid_from_options("ro root=UUID=xyz quiet"), Some("xyz"));
-        assert_eq!(extract_root_uuid_from_options("ro rhgb quiet"), None);
+        let opts = "root=UUID=abc-123 ro rhgb";
+        let result = extract_root_uuid_from_options(opts);
+        assert_eq!(result.unwrap().as_str(), "abc-123");
+
+        let result2 = extract_root_uuid_from_options("ro root=UUID=xyz quiet");
+        assert_eq!(result2.unwrap().as_str(), "xyz");
+
+        assert!(extract_root_uuid_from_options("ro rhgb quiet").is_none());
     }
 
     #[test]
     fn root_uuid_no_false_match() {
-        assert_eq!(extract_root_uuid_from_options("rootflags=subvol=root"), None);
-        assert_eq!(extract_root_uuid_from_options("root=/dev/vda4"), None);
+        assert!(extract_root_uuid_from_options("rootflags=subvol=root").is_none());
+        assert!(extract_root_uuid_from_options("root=/dev/vda4").is_none());
     }
 
     #[test]
