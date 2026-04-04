@@ -2,7 +2,6 @@
 //! dracut, grub2-mkconfig, rsync) and fstab parsing helpers. Each
 //! function delegates to a system tool and returns structured results.
 
-use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::Command;
 use std::fs;
@@ -14,7 +13,9 @@ use crate::consts::{BTRFS_TOPLEVEL_SUBVOLID, PROBE_MOUNT_PREFIX, TOPLEVEL_MOUNT}
 /// which commits to the in-memory journal but NOT to disk. Changes are lost
 /// on power failure until the next btrfs transaction commit (up to 30s).
 /// syncfs forces the commit.
+#[cfg(target_os = "linux")]
 pub fn sync_filesystem(path: &str) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
     let f = fs::File::open(path)
         .map_err(|e| format!("open {path} for sync: {e}"))?;
     let ret = unsafe { libc::syncfs(f.as_raw_fd()) };
@@ -23,6 +24,11 @@ pub fn sync_filesystem(path: &str) -> Result<(), String> {
     } else {
         Err(format!("syncfs {path}: {}", std::io::Error::last_os_error()))
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn sync_filesystem(_path: &str) -> Result<(), String> {
+    unreachable!("atomic-rollback is a Linux-only tool")
 }
 
 /// Runs a command and returns stdout as a trimmed string. Fails on non-zero exit.
