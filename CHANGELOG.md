@@ -2,6 +2,12 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.3.6] - 2026-04-04
+
+### Fixed
+
+- `check`, `setup`, and `migrate` failed on aarch64 with "shimx64.efi is missing." The EFI boot file check hardcoded x86_64 filenames instead of deriving them from the UEFI architecture suffix.
+
 ## [0.3.5] - 2026-04-03
 
 ### Changed
