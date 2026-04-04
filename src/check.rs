@@ -190,7 +190,8 @@ fn check_default_subvol_matches_root(mount_point: &str, root: &Path) -> CheckRes
 
     let root_subvol_name = tools::fstab_entries(&lines).into_iter()
         .find(|e| e.fs_file == "/")
-        .and_then(|e| parse::extract_mount_option(&e.fs_mntops, "subvol"));
+        .and_then(|e| parse::extract_mount_option(&e.fs_mntops, "subvol"))
+        .map(|s| tools::SubvolName::new(s.to_string()));
 
     let root_subvol_name = match root_subvol_name {
         Some(name) => name,
@@ -342,11 +343,11 @@ fn check_root_mountable(root: &Path) -> Vec<CheckResult> {
     };
 
     results.push(check_blkid_uuid_fstype(&root_uuid, tools::FsType::Btrfs).map_err(|e| format!(
-        "Root filesystem UUID {root_uuid} is not a Btrfs partition: {e}. \
-         This tool requires Btrfs as the root filesystem.")));
+        "Root filesystem UUID {} is not a Btrfs partition: {e}. \
+         This tool requires Btrfs as the root filesystem.", root_uuid.as_str())));
 
-    let root_device = format!("UUID={root_uuid}");
-    results.push(check_btrfs_subvol_exists(&root_device, "root").map_err(|e| format!(
+    let root_device = root_uuid.clone().into_device_spec();
+    results.push(check_btrfs_subvol_exists(&root_device, &tools::SubvolName::new("root".into())).map_err(|e| format!(
         "Btrfs subvolume 'root' not found: {e}. \
          The kernel expects to mount subvol=root as /. \
          Without it, the system drops to an emergency shell.")));
@@ -381,7 +382,7 @@ fn check_fstab_mounts(root: &Path) -> Vec<CheckResult> {
     results
 }
 
-fn check_fstab_entry(device: &str, mount_point: &str, fstype: &tools::FsType, options: &str) -> CheckResult {
+fn check_fstab_entry(device: &tools::DeviceSpec, mount_point: &str, fstype: &tools::FsType, options: &str) -> CheckResult {
     tools::resolve_fstab_device(device)
         .map_err(|_| format!(
             "Mount {mount_point}: device {device} does not resolve. \
@@ -390,7 +391,7 @@ fn check_fstab_entry(device: &str, mount_point: &str, fstype: &tools::FsType, op
 
     if *fstype == tools::FsType::Btrfs {
         if let Some(subvol) = parse::extract_mount_option(options, "subvol") {
-            return check_btrfs_subvol_exists(device, &subvol)
+            return check_btrfs_subvol_exists(device, &tools::SubvolName::new(subvol.to_string()))
                 .map_err(|_| format!(
                     "Mount {mount_point}: Btrfs subvolume '{subvol}' does not exist. \
                      systemd will fail to mount it and the system may hang at boot. \
@@ -419,30 +420,30 @@ fn check_file_contains(path: &Path, needle: &str, msg: &str) -> CheckResult {
     }
 }
 
-fn check_blkid_uuid_fstype(uuid: &str, expected: tools::FsType) -> CheckResult {
+fn check_blkid_uuid_fstype(uuid: &tools::BareUuid, expected: tools::FsType) -> CheckResult {
     let fstype = tools::blkid_fstype(uuid)?;
     if fstype == expected { Ok(()) } else {
-        Err(format!("UUID={uuid} has unexpected filesystem type"))
+        Err(format!("UUID={} has unexpected filesystem type", uuid.as_str()))
     }
 }
 
-fn check_btrfs_subvol_exists(device_spec: &str, name: &str) -> CheckResult {
+fn check_btrfs_subvol_exists(device_spec: &tools::DeviceSpec, name: &tools::SubvolName) -> CheckResult {
     let mount = tools::get_mount_point(device_spec)?;
     let entries = tools::btrfs_subvol_list(mount.path())?;
-    if entries.iter().any(|e| e.path == name) {
+    if entries.iter().any(|e| e.path == name.as_str()) {
         Ok(())
     } else {
         Err(format!("subvolume '{name}' not found on {device_spec}"))
     }
 }
 
-fn extract_root_uuid(root: &Path) -> Option<String> {
+fn extract_root_uuid(root: &Path) -> Option<tools::BareUuid> {
     let entries_dir = root.join(&P.bls_dir[1..]);
     for entry in fs::read_dir(&entries_dir).ok()?.flatten() {
         if entry.path().extension().is_some_and(|ext| ext == "conf") {
             let content = fs::read_to_string(entry.path()).ok()?;
             if let Some(options) = parse::bls_field(&content, "options") {
-                return parse::extract_root_uuid_from_options(options).map(|s| s.to_string());
+                return parse::extract_root_uuid_from_options(options);
             }
         }
     }
