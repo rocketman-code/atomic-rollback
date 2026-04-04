@@ -22,8 +22,8 @@ impl BareUuid {
     }
 }
 
-/// Fstab device specification. Preserves the original format for
-/// round-tripping to fstab and for passing to findmnt/mount.
+/// Fstab device specification. Keeps the original format so it can be
+/// written back to fstab.
 #[derive(Debug, Clone)]
 pub enum DeviceSpec {
     Uuid(String),
@@ -35,7 +35,7 @@ pub enum DeviceSpec {
 }
 
 impl DeviceSpec {
-    /// Parse an fstab fs_spec field into a typed DeviceSpec.
+    /// Parse an fstab fs_spec field.
     pub fn parse(spec: &str) -> Self {
         if let Some(v) = spec.strip_prefix("UUID=") {
             Self::Uuid(v.to_string())
@@ -73,7 +73,7 @@ impl std::fmt::Display for DeviceSpec {
     }
 }
 
-/// Resolved device path (always /dev/...). Produced by resolve_fstab_device.
+/// Resolved /dev/ path.
 #[derive(Debug, Clone)]
 pub struct DevicePath(String);
 
