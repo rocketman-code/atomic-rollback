@@ -3,7 +3,7 @@ Version:        0.3.3
 Release:        1%{?dist}
 Summary:        Atomic system rollback for Fedora via Btrfs RENAME_EXCHANGE
 
-License:        MIT OR Apache-2.0
+License:        GPL-3.0-only AND (MIT OR Apache-2.0) AND MIT AND Unicode-3.0
 URL:            https://github.com/rocketman-code/atomic-rollback
 Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
 Source1:        %{name}-%{version}-vendor.tar.gz
@@ -45,7 +45,7 @@ install -Dm755 hooks/90-%{name}.install %{buildroot}%{_prefix}/lib/kernel/instal
 install -Dm644 plugins/%{name}.actions %{buildroot}%{_sysconfdir}/dnf/libdnf5-plugins/actions.d/%{name}.actions
 
 %files
-%license LICENSE-MIT LICENSE-APACHE
+%license LICENSE
 %doc README.md
 %{_bindir}/%{name}
 %{_prefix}/lib/kernel/install.d/90-%{name}.install

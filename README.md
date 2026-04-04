@@ -134,4 +134,6 @@ The parser functions (bootability check, BLS entry parsing, mount option extract
 
 ## License
 
-MIT OR Apache-2.0
+GPL-3.0-only
+
+Copyright (C) 2026 Harnoor Lal. See [LICENSE](LICENSE) for the full text.
