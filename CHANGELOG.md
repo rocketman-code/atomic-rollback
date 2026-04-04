@@ -2,6 +2,12 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.3.5] - 2026-04-03
+
+### Changed
+
+- All device references are now typed. Bare UUIDs, fstab device specs (UUID=, LABEL=, PARTUUID=, PARTLABEL=, ID=, /dev/ paths), resolved device paths, and subvolume names each have distinct types. Passing a bare UUID where a device spec is expected (the bug fixed in 0.3.3) is now a compile error. No behavior changes.
+
 ## [0.3.4] - 2026-04-03
 
 ### Changed
