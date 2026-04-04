@@ -33,7 +33,7 @@ impl GrubContext {
         let target_fstype = tools::blkid_fstype(&stub.boot_uuid)
             .unwrap_or(tools::FsType::Other("unknown".into()));
 
-        let mount = tools::get_mount_point(&format!("UUID={}", stub.boot_uuid))?;
+        let mount = tools::get_mount_point(&stub.boot_uuid.clone().into_device_spec())?;
         let linux_mount_point = mount.path().to_string();
 
         Ok(Self { target_fstype, btrfs_relative: stub.btrfs_relative, linux_mount_point, _mount: Some(mount) })
