@@ -345,7 +345,8 @@ fn check_root_mountable(root: &Path) -> Vec<CheckResult> {
         "Root filesystem UUID {root_uuid} is not a Btrfs partition: {e}. \
          This tool requires Btrfs as the root filesystem.")));
 
-    results.push(check_btrfs_subvol_exists(&root_uuid, "root").map_err(|e| format!(
+    let root_device = format!("UUID={root_uuid}");
+    results.push(check_btrfs_subvol_exists(&root_device, "root").map_err(|e| format!(
         "Btrfs subvolume 'root' not found: {e}. \
          The kernel expects to mount subvol=root as /. \
          Without it, the system drops to an emergency shell.")));
