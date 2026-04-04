@@ -125,12 +125,13 @@ fn check_esp(root: &Path) -> Vec<CheckResult> {
     let efi_dir = root.join(&P.esp_dir[1..]);
     let mut results = Vec::new();
 
-    for name in ["shimx64.efi", "grubx64.efi"] {
-        let path = efi_dir.join(name);
+    let s = P.efi_suffix;
+    for name in [format!("shim{s}.efi"), format!("grub{s}.efi")] {
+        let path = efi_dir.join(&name);
         results.push(check_file_exists_nonempty(&path).map_err(|_|
             format!("{name} is missing from the EFI partition. \
                      The system cannot boot without it. \
-                     Reinstall the grub2-efi package: sudo dnf reinstall grub2-efi-x64")
+                     Reinstall the grub2-efi package: sudo dnf reinstall grub2-efi-{s}")
         ));
     }
 
@@ -138,7 +139,7 @@ fn check_esp(root: &Path) -> Vec<CheckResult> {
     results.push(check_file_exists_nonempty(&grub_cfg).map_err(|_|
         format!("EFI grub.cfg is missing at {}. \
                  GRUB will drop to a rescue shell on next boot. \
-                 Reinstall: sudo dnf reinstall grub2-efi-x64", grub_cfg.display())
+                 Reinstall: sudo dnf reinstall grub2-efi-{s}", grub_cfg.display())
     ));
     results.push(check_file_contains(&grub_cfg, "--fs-uuid",
         "EFI grub.cfg does not contain a filesystem search directive. \
@@ -448,4 +449,33 @@ fn extract_root_uuid(root: &Path) -> Option<tools::BareUuid> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn check_esp_uses_arch_correct_filenames() {
+        let dir = std::env::temp_dir().join("atomic-rollback-test-esp");
+        let _ = fs::remove_dir_all(&dir);
+        let efi_dir = dir.join(&P.esp_dir[1..]);
+        fs::create_dir_all(&efi_dir).unwrap();
+
+        fs::write(efi_dir.join(format!("shim{}.efi", P.efi_suffix)), b"shim").unwrap();
+        fs::write(efi_dir.join(format!("grub{}.efi", P.efi_suffix)), b"grub").unwrap();
+
+        fs::write(
+            efi_dir.join("grub.cfg"),
+            "search --no-floppy --fs-uuid --set=dev abc-123\nconfigfile $prefix/grub.cfg\n",
+        ).unwrap();
+
+        let results = check_esp(&dir);
+        for (i, r) in results.iter().enumerate() {
+            assert!(r.is_ok(), "check {i} failed: {:?}", r.as_ref().err());
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

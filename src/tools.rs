@@ -336,7 +336,7 @@ pub fn dracut_rebuild(output: &str, kver: &str) -> Result<(), String> {
 // --- grub ---
 
 /// ESP grub.cfg stub contract. Derived from gen_grub_cfgstub
-/// (/usr/bin/gen_grub_cfgstub, grub2-efi-x64 package).
+/// (/usr/bin/gen_grub_cfgstub).
 /// The generator's inputs are boot_uuid and grub_dir.
 /// btrfs_relative is added by our migration.
 pub struct EspStub {
