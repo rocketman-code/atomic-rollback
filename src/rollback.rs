@@ -43,7 +43,7 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
 
     // RENAME_EXCHANGE: root_subvol <-> snapshot
     println!("  RENAME_EXCHANGE: {root_subvol} <-> {snapshot_name}");
-    swap::rename_exchange(Path::new(toplevel), &root_subvol, snapshot_name)?;
+    swap::rename_exchange(Path::new(toplevel), root_subvol.as_str(), snapshot_name)?;
 
     // Update default subvolume to match the new root.
     // If this fails, UNDO the swap so the system is unchanged.
@@ -52,7 +52,7 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
         Ok(id) => id,
         Err(e) => {
             eprintln!("  set-default failed; undoing swap to restore original state");
-            if let Err(undo_err) = swap::rename_exchange(Path::new(toplevel), &root_subvol, snapshot_name) {
+            if let Err(undo_err) = swap::rename_exchange(Path::new(toplevel), root_subvol.as_str(), snapshot_name) {
                 eprintln!("  CRITICAL: undo swap also failed: {undo_err}");
                 eprintln!("  System is in an inconsistent state. Manual recovery required.");
             }
@@ -64,7 +64,7 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
     println!("  set-default: ID {new_root_id}");
     if let Err(e) = tools::btrfs_subvol_set_default(new_root_id, toplevel) {
         eprintln!("  set-default failed; undoing swap to restore original state");
-        if let Err(undo_err) = swap::rename_exchange(Path::new(toplevel), &root_subvol, snapshot_name) {
+        if let Err(undo_err) = swap::rename_exchange(Path::new(toplevel), root_subvol.as_str(), snapshot_name) {
             eprintln!("  CRITICAL: undo swap also failed: {undo_err}");
             eprintln!("  System is in an inconsistent state. Manual recovery required.");
         }
