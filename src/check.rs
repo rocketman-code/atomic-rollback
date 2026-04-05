@@ -438,6 +438,46 @@ fn check_btrfs_subvol_exists(device_spec: &tools::DeviceSpec, name: &tools::Subv
     }
 }
 
+pub fn print_rollback_scope(fstab: &str) {
+    let lines = tools::parse_fstab(fstab);
+    let entries = tools::fstab_entries(&lines);
+
+    let protected: Vec<&str> = entries.iter()
+        .filter(|e| e.fs_file != "/")
+        .filter(|e| parse::extract_mount_option(&e.fs_mntops, "subvol").is_some())
+        .map(|e| e.fs_file.as_str())
+        .collect();
+
+    println!("  Rollback scope:\n");
+
+    if !protected.is_empty() {
+        println!("  SAFE  Separate subvolumes (not affected by rollback):");
+        for p in &protected {
+            println!("        {p}");
+        }
+        println!();
+    }
+
+    let at_risk: Vec<String> = match fs::read_dir("/") {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+            .map(|e| format!("/{}", e.file_name().to_string_lossy()))
+            .filter(|dir| !tools::is_mountpoint(Path::new(dir)))
+            .filter(|dir| fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some()))
+            .collect(),
+        Err(_) => vec![],
+    };
+
+    if !at_risk.is_empty() {
+        println!("  RISK  Inside root subvolume (will revert on rollback):");
+        for r in &at_risk {
+            println!("        {r}");
+        }
+        println!();
+    }
+}
+
 fn extract_root_uuid(root: &Path) -> Option<tools::BareUuid> {
     let entries_dir = root.join(&P.bls_dir[1..]);
     for entry in fs::read_dir(&entries_dir).ok()?.flatten() {

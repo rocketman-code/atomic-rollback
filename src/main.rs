@@ -144,10 +144,16 @@ fn main() {
             println!("atomic-rollback: checking system bootability\n");
             match check::verify_bootable(Path::new(&root)) {
                 check::BootStatus::Pass => {
-                    println!("\nSystem is bootable.");
+                    println!("\nSystem is bootable.\n");
+                    if let Ok((_, fstab)) = tools::root_device() {
+                        check::print_rollback_scope(&fstab);
+                    }
                 }
                 check::BootStatus::Warn => {
-                    println!("\nSystem is bootable (with warnings).");
+                    println!("\nSystem is bootable (with warnings).\n");
+                    if let Ok((_, fstab)) = tools::root_device() {
+                        check::print_rollback_scope(&fstab);
+                    }
                     std::process::exit(2);
                 }
                 check::BootStatus::Fail(failures) => {
