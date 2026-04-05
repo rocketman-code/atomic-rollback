@@ -156,10 +156,16 @@ fn main() {
             println!("atomic-rollback: verifying boot chain\n");
             match check::verify_bootable(Path::new(&root)) {
                 check::BootStatus::Pass => {
-                    println!("\nBoot chain is valid.");
+                    println!("\nBoot chain is valid.\n");
+                    if let Ok((_, fstab)) = tools::root_device() {
+                        check::print_rollback_scope(&fstab);
+                    }
                 }
                 check::BootStatus::Warn => {
-                    println!("\nBoot chain is valid (with warnings).");
+                    println!("\nBoot chain is valid (with warnings).\n");
+                    if let Ok((_, fstab)) = tools::root_device() {
+                        check::print_rollback_scope(&fstab);
+                    }
                     std::process::exit(2);
                 }
                 check::BootStatus::Fail(failures) => {

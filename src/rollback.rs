@@ -41,6 +41,8 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
         }
     }
 
+    check::print_rollback_scope(&fstab);
+
     // RENAME_EXCHANGE: root_subvol <-> snapshot
     println!("  RENAME_EXCHANGE: {root_subvol} <-> {snapshot_name}");
     swap::rename_exchange(Path::new(toplevel), root_subvol.as_str(), snapshot_name)?;
