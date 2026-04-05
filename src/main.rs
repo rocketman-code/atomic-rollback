@@ -174,7 +174,10 @@ fn main() {
         Command::Snapshot(sub) => match sub {
             SnapshotCommand::Create { name } => {
                 match snapshot::snapshot(name.as_deref()) {
-                    Ok(name) => eprintln!("Snapshot '{name}' created."),
+                    Ok(snapshot::SnapshotResult::Created(name)) =>
+                        eprintln!("Snapshot '{name}' created."),
+                    Ok(snapshot::SnapshotResult::Existed(name)) =>
+                        eprintln!("Snapshot '{name}' already exists."),
                     Err(e) => {
                         eprintln!("Snapshot failed: {e}");
                         std::process::exit(1);
