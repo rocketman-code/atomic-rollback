@@ -178,6 +178,7 @@ fn main() {
                         eprintln!("Snapshot '{name}' created."),
                     Ok(snapshot::SnapshotResult::Existed(name)) =>
                         eprintln!("Snapshot '{name}' already exists."),
+                    Ok(snapshot::SnapshotResult::NotBtrfs) => {}
                     Err(e) => {
                         eprintln!("Snapshot failed: {e}");
                         std::process::exit(1);

@@ -12,14 +12,19 @@ use crate::{parse, tools};
 pub enum SnapshotResult {
     Created(String),
     Existed(String),
+    NotBtrfs,
 }
 
 /// Creates a snapshot of the root subvolume at the btrfs top level.
 /// Idempotent: returns Existed if the snapshot already exists.
+/// Returns NotBtrfs if the root filesystem is not btrfs (nothing to protect).
 pub fn snapshot(name: Option<&str>) -> Result<SnapshotResult, String> {
     let name = name.unwrap_or(DEFAULT_SNAPSHOT_NAME);
     let (_, fstab) = tools::root_device()?;
-    let root_subvol = tools::root_subvol_name(&fstab)?;
+    let root_subvol = match tools::root_subvol_name(&fstab) {
+        Ok(s) => s,
+        Err(_) => return Ok(SnapshotResult::NotBtrfs),
+    };
 
     tools::with_toplevel(|toplevel| {
         let snap_path = format!("{toplevel}/{name}");

@@ -1,0 +1,1 @@
+%__transaction_atomic_rollback  %{__plugindir}/atomic_rollback.so
