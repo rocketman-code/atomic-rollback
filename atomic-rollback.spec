@@ -11,6 +11,7 @@ Source1:        %{name}-%{version}-vendor.tar.gz
 BuildRequires:  cargo
 BuildRequires:  rust >= 1.85
 BuildRequires:  gcc
+BuildRequires:  rpm-devel
 
 # Runtime: the tools our code delegates to
 Requires:       btrfs-progs
@@ -35,6 +36,7 @@ cp cargo-config.toml .cargo/config.toml
 
 %build
 cargo build --release --offline
+gcc -shared -fPIC -o atomic_rollback.so plugins/atomic_rollback.c $(pkg-config --cflags --libs rpm)
 
 %check
 cargo test --release --offline
@@ -43,6 +45,8 @@ cargo test --release --offline
 install -Dm755 target/release/%{name} %{buildroot}%{_bindir}/%{name}
 install -Dm755 hooks/90-%{name}.install %{buildroot}%{_prefix}/lib/kernel/install.d/90-%{name}.install
 install -Dm644 plugins/%{name}.actions %{buildroot}%{_sysconfdir}/dnf/libdnf5-plugins/actions.d/%{name}.actions
+install -Dm755 atomic_rollback.so %{buildroot}%{__plugindir}/atomic_rollback.so
+install -Dm644 plugins/macros.transaction_atomic_rollback %{buildroot}/usr/lib/rpm/macros.d/macros.transaction_atomic_rollback
 
 %files
 %license LICENSE
@@ -50,5 +54,7 @@ install -Dm644 plugins/%{name}.actions %{buildroot}%{_sysconfdir}/dnf/libdnf5-pl
 %{_bindir}/%{name}
 %{_prefix}/lib/kernel/install.d/90-%{name}.install
 %config(noreplace) %{_sysconfdir}/dnf/libdnf5-plugins/actions.d/%{name}.actions
+%{__plugindir}/atomic_rollback.so
+/usr/lib/rpm/macros.d/macros.transaction_atomic_rollback
 
 %changelog
