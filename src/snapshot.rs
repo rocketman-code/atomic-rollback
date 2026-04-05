@@ -8,9 +8,15 @@ use std::path::Path;
 use crate::consts::DEFAULT_SNAPSHOT_NAME;
 use crate::{parse, tools};
 
+/// Result of a snapshot operation.
+pub enum SnapshotResult {
+    Created(String),
+    Existed(String),
+}
+
 /// Creates a snapshot of the root subvolume at the btrfs top level.
-/// Idempotent: returns Ok if the snapshot already exists.
-pub fn snapshot(name: Option<&str>) -> Result<String, String> {
+/// Idempotent: returns Existed if the snapshot already exists.
+pub fn snapshot(name: Option<&str>) -> Result<SnapshotResult, String> {
     let name = name.unwrap_or(DEFAULT_SNAPSHOT_NAME);
     let (_, fstab) = tools::root_device()?;
     let root_subvol = tools::root_subvol_name(&fstab)?;
@@ -18,11 +24,10 @@ pub fn snapshot(name: Option<&str>) -> Result<String, String> {
     tools::with_toplevel(|toplevel| {
         let snap_path = format!("{toplevel}/{name}");
         if Path::new(&snap_path).exists() {
-            eprintln!("Snapshot '{name}' already exists; using existing protection.");
-            return Ok(name.to_string());
+            return Ok(SnapshotResult::Existed(name.to_string()));
         }
         tools::btrfs_subvol_snapshot(&format!("{toplevel}/{}", root_subvol.as_str()), &snap_path)?;
-        Ok(name.to_string())
+        Ok(SnapshotResult::Created(name.to_string()))
     })
 }
 
