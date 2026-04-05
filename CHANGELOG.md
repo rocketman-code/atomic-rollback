@@ -2,6 +2,17 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.3.7] - 2026-04-05
+
+### Added
+
+- RPM plugin: snapshots are now created before every RPM transaction regardless of frontend (dnf, PackageKit/Discover, bare rpm). Previously only dnf5 transactions triggered snapshots via the libdnf5 actions plugin.
+
+### Fixed
+
+- `snapshot` no longer prints contradictory "already exists" and "created" messages on the same call. The function returns a typed result and the caller handles messaging.
+- `snapshot` is now a safe no-op on non-btrfs systems instead of failing and blocking package transactions.
+
 ## [0.3.6] - 2026-04-04
 
 ### Fixed
