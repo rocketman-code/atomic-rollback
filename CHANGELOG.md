@@ -2,6 +2,12 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.3.8] - 2026-04-07
+
+### Fixed
+
+- `check`, `setup`, and `migrate` failed at the baseline gate with "Btrfs subvolume 'root' not found" on systems with a non-default root subvolume name (e.g., the openSUSE Timeshift `@` layout). The root filesystem check hardcoded `"root"` instead of reading the `subvol=` mount option from `/etc/fstab`. Closes #15.
+
 ## [0.3.7] - 2026-04-05
 
 ### Added
