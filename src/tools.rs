@@ -82,21 +82,6 @@ impl DevicePath {
     pub fn as_str(&self) -> &str { &self.0 }
 }
 
-/// Btrfs subvolume name (e.g., "root", "home", "var", "root.pre-update").
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubvolName(String);
-
-impl SubvolName {
-    pub fn new(s: String) -> Self { Self(s) }
-    pub fn as_str(&self) -> &str { &self.0 }
-}
-
-impl std::fmt::Display for SubvolName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
 /// Flush all pending filesystem changes to disk.
 /// Btrfs operations (RENAME_EXCHANGE, set-default) use btrfs_end_transaction,
 /// which commits to the in-memory journal but NOT to disk. Changes are lost
@@ -244,7 +229,7 @@ pub fn is_mountpoint(path: &Path) -> bool {
 /// Parsed btrfs subvolume entry. Derived from the output grammar:
 ///   "ID " u64 " gen " u64 " top level " u64 " path " string "\n"
 /// Source: cmds/subvolume-list.c:1249 (list), cmds/subvolume.c:822 (get-default).
-pub struct SubvolEntry {
+pub struct Subvolume {
     pub id: u64,
     pub path: String,
     // Parsed for format validation, not currently consumed.
@@ -255,12 +240,12 @@ pub struct SubvolEntry {
 /// Parses one line of btrfs subvolume list/get-default output.
 /// Uses sentinel-based extraction (not whitespace splitting) because
 /// the path field can contain spaces.
-fn parse_subvol_line(line: &str) -> Option<SubvolEntry> {
+fn parse_subvol_line(line: &str) -> Option<Subvolume> {
     let rest = line.strip_prefix("ID ")?;
     let (id_str, rest) = rest.split_once(" gen ")?;
     let (gen_str, rest) = rest.split_once(" top level ")?;
     let (top_str, path) = rest.split_once(" path ")?;
-    Some(SubvolEntry {
+    Some(Subvolume {
         id: id_str.parse().ok()?,
         _generation: gen_str.parse().ok()?,
         _top_level: top_str.parse().ok()?,
@@ -269,7 +254,7 @@ fn parse_subvol_line(line: &str) -> Option<SubvolEntry> {
 }
 
 /// Lists all subvolumes on the filesystem containing mount_point.
-pub fn btrfs_subvol_list(mount_point: &str) -> Result<Vec<SubvolEntry>, String> {
+pub fn btrfs_subvol_list(mount_point: &str) -> Result<Vec<Subvolume>, String> {
     let out = run_stdout("btrfs", &["subvolume", "list", mount_point])?;
     out.lines()
         .map(|line| parse_subvol_line(line)
@@ -304,13 +289,33 @@ pub fn btrfs_subvol_snapshot(src: &str, dst: &str) -> Result<(), String> {
     run_stdout("btrfs", &["subvolume", "snapshot", src, dst]).map(|_| ())
 }
 
-/// Looks up a subvolume's ID by name.
-pub fn btrfs_subvol_id_by_name(mount_point: &str, name: &SubvolName) -> Result<u64, String> {
-    let entries = btrfs_subvol_list(mount_point)?;
-    entries.iter()
-        .find(|e| e.path == name.as_str())
-        .map(|e| e.id)
-        .ok_or_else(|| format!("subvol '{}' not found on {mount_point}", name.as_str()))
+/// Looks up a subvolume by name on the btrfs filesystem containing mount_point.
+pub fn find_subvol(mount_point: &str, name: String) -> Result<Subvolume, String> {
+    btrfs_subvol_list(mount_point)?
+        .into_iter()
+        .find(|sv| sv.path == name)
+        .ok_or_else(move || format!("subvol '{name}' not found on {mount_point}"))
+}
+
+/// A subvolume whose name does not appear as a subvol= mount option in /etc/fstab.
+pub struct NonSystemSubvolume(Subvolume);
+
+impl NonSystemSubvolume {
+    /// Rejects subvolumes whose name appears as a subvol= mount option in fstab.
+    pub fn refine(subvol: Subvolume, fstab: &str) -> Result<Self, String> {
+        let lines = parse_fstab(fstab);
+        let is_system = fstab_entries(&lines).into_iter()
+            .filter_map(|e| crate::parse::extract_mount_option(&e.fs_mntops, "subvol"))
+            .any(|protected| protected == subvol.path.as_str());
+        if is_system {
+            return Err(format!(
+                "Cannot delete '{}': referenced by /etc/fstab as a system subvolume. \
+                 Deleting it would break the system.", subvol.path));
+        }
+        Ok(Self(subvol))
+    }
+
+    pub fn as_subvolume(&self) -> &Subvolume { &self.0 }
 }
 
 // --- mount/umount ---
@@ -505,12 +510,14 @@ pub fn root_device() -> Result<(DevicePath, String), String> {
 }
 
 /// Extract the root subvolume name from fstab (the subvol= value for /).
-pub fn root_subvol_name(fstab: &str) -> Result<SubvolName, String> {
+/// Returns the raw name string. To obtain a typed Subvolume, pass the
+/// result to find_subvol on a mounted btrfs filesystem.
+pub fn root_subvol_name(fstab: &str) -> Result<String, String> {
     let lines = parse_fstab(fstab);
     fstab_entries(&lines).into_iter()
         .find(|e| e.fs_file == "/")
         .and_then(|e| crate::parse::extract_mount_option(&e.fs_mntops, "subvol"))
-        .map(|s| SubvolName::new(s.to_string()))
+        .map(|s| s.to_string())
         .ok_or_else(|| "Cannot determine root subvolume name from /etc/fstab".into())
 }
 

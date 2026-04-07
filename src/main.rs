@@ -209,8 +209,20 @@ fn main() {
                 }
             }
             SnapshotCommand::Delete { name } => {
-                match snapshot::delete(&name) {
-                    Ok(()) => eprintln!("Deleted snapshot '{name}'."),
+                let result: Result<tools::NonSystemSubvolume, String> = (|| {
+                    let (_, fstab) = tools::root_device()?;
+                    let subvol = tools::find_subvol("/", name)?;
+                    tools::NonSystemSubvolume::refine(subvol, &fstab)
+                })();
+                let target = match result {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("Snapshot delete failed: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                match snapshot::delete(&target) {
+                    Ok(()) => eprintln!("Deleted snapshot '{}'.", target.as_subvolume().path),
                     Err(e) => {
                         eprintln!("Snapshot delete failed: {e}");
                         std::process::exit(1);

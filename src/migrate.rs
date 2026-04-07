@@ -146,7 +146,7 @@ fn step3_set_default_subvol() -> Result<(), String> {
 
     let (_, fstab) = tools::root_device()?;
     let root_subvol = tools::root_subvol_name(&fstab)?;
-    let root_id = tools::btrfs_subvol_id_by_name("/", &root_subvol)?;
+    let root_id = tools::find_subvol("/", &root_subvol)?.id;
     tools::btrfs_subvol_set_default(root_id, "/")?;
     println!("  default subvol '{root_subvol}' set to ID {root_id}");
 

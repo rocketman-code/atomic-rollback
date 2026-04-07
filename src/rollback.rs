@@ -50,8 +50,8 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
     // Update default subvolume to match the new root.
     // If this fails, UNDO the swap so the system is unchanged.
     // The model treats rollback as atomic: both happen or neither.
-    let new_root_id = match tools::btrfs_subvol_id_by_name(toplevel, &root_subvol) {
-        Ok(id) => id,
+    let new_root_id = match tools::find_subvol(toplevel, &root_subvol) {
+        Ok(sv) => sv.id,
         Err(e) => {
             eprintln!("  set-default failed; undoing swap to restore original state");
             if let Err(undo_err) = swap::rename_exchange(Path::new(toplevel), root_subvol.as_str(), snapshot_name) {

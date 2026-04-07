@@ -192,7 +192,7 @@ fn check_default_subvol_matches_root(mount_point: &str, root: &Path) -> CheckRes
     let root_subvol_name = tools::fstab_entries(&lines).into_iter()
         .find(|e| e.fs_file == "/")
         .and_then(|e| parse::extract_mount_option(&e.fs_mntops, "subvol"))
-        .map(|s| tools::SubvolName::new(s.to_string()));
+        .map(|s| s.to_string());
 
     let root_subvol_name = match root_subvol_name {
         Some(name) => name,
@@ -201,17 +201,18 @@ fn check_default_subvol_matches_root(mount_point: &str, root: &Path) -> CheckRes
              The fstab entry for / must include subvol=<name>.".into()),
     };
 
-    let root_subvol_id = tools::btrfs_subvol_id_by_name(mount_point, &root_subvol_name)?;
+    let root_subvol = tools::find_subvol(mount_point, &root_subvol_name)?;
 
-    if default_id == root_subvol_id {
+    if default_id == root_subvol.id {
         Ok(())
     } else {
         Err(format!(
             "GRUB and Linux see different root filesystems. \
              GRUB resolves paths from subvolume ID {default_id}, \
-             but the subvolume '{root_subvol_name}' (mounted as /) has ID {root_subvol_id}. \
+             but the subvolume '{}' (mounted as /) has ID {}. \
              The system will not boot correctly. \
-             Fix: sudo btrfs subvolume set-default {root_subvol_id} /"
+             Fix: sudo btrfs subvolume set-default {} /",
+            root_subvol.path, root_subvol.id, root_subvol.id
         ))
     }
 }
@@ -348,7 +349,7 @@ fn check_root_mountable(root: &Path) -> Vec<CheckResult> {
          This tool requires Btrfs as the root filesystem.", root_uuid.as_str())));
 
     let root_device = root_uuid.clone().into_device_spec();
-    results.push(check_btrfs_subvol_exists(&root_device, &tools::SubvolName::new("root".into())).map_err(|e| format!(
+    results.push(check_btrfs_subvol_exists(&root_device, "root").map_err(|e| format!(
         "Btrfs subvolume 'root' not found: {e}. \
          The kernel expects to mount subvol=root as /. \
          Without it, the system drops to an emergency shell.")));
@@ -392,7 +393,7 @@ fn check_fstab_entry(device: &tools::DeviceSpec, mount_point: &str, fstype: &too
 
     if *fstype == tools::FsType::Btrfs {
         if let Some(subvol) = parse::extract_mount_option(options, "subvol") {
-            return check_btrfs_subvol_exists(device, &tools::SubvolName::new(subvol.to_string()))
+            return check_btrfs_subvol_exists(device, subvol)
                 .map_err(|_| format!(
                     "Mount {mount_point}: Btrfs subvolume '{subvol}' does not exist. \
                      systemd will fail to mount it and the system may hang at boot. \
@@ -428,10 +429,10 @@ fn check_blkid_uuid_fstype(uuid: &tools::BareUuid, expected: tools::FsType) -> C
     }
 }
 
-fn check_btrfs_subvol_exists(device_spec: &tools::DeviceSpec, name: &tools::SubvolName) -> CheckResult {
+fn check_btrfs_subvol_exists(device_spec: &tools::DeviceSpec, name: &str) -> CheckResult {
     let mount = tools::get_mount_point(device_spec)?;
     let entries = tools::btrfs_subvol_list(mount.path())?;
-    if entries.iter().any(|e| e.path == name.as_str()) {
+    if entries.iter().any(|e| e.path == name) {
         Ok(())
     } else {
         Err(format!("subvolume '{name}' not found on {device_spec}"))
