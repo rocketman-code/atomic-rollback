@@ -347,10 +347,29 @@ fn check_root_mountable(root: &Path) -> Vec<CheckResult> {
         "Root filesystem UUID {} is not a Btrfs partition: {e}. \
          This tool requires Btrfs as the root filesystem.", root_uuid.as_str())));
 
+    let fstab_content = match fs::read_to_string(root.join("etc/fstab")) {
+        Ok(c) => c,
+        Err(e) => {
+            results.push(Err(format!(
+                "Cannot read /etc/fstab to determine root subvolume: {e}. \
+                 The system may not boot.")));
+            return results;
+        }
+    };
+
+    let root_subvol_name = match tools::root_subvol_name(&fstab_content) {
+        Ok(name) => name,
+        Err(e) => {
+            results.push(Err(format!(
+                "{e}. The fstab entry for / must include subvol=<name>.")));
+            return results;
+        }
+    };
+
     let root_device = root_uuid.clone().into_device_spec();
-    results.push(check_btrfs_subvol_exists(&root_device, &tools::SubvolName::new("root".into())).map_err(|e| format!(
-        "Btrfs subvolume 'root' not found: {e}. \
-         The kernel expects to mount subvol=root as /. \
+    results.push(check_btrfs_subvol_exists(&root_device, &root_subvol_name).map_err(|e| format!(
+        "Btrfs subvolume '{root_subvol_name}' not found: {e}. \
+         The kernel expects to mount subvol={root_subvol_name} as /. \
          Without it, the system drops to an emergency shell.")));
 
     results.push(check_file_exists_nonempty(&root.join(&P.systemd_path[1..])).map_err(|_|
@@ -477,5 +496,29 @@ mod tests {
         }
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn root_subvol_name_reads_at_sign_layout() {
+        let fstab = "\
+UUID=abc / btrfs subvol=@,compress=zstd:1 0 0
+UUID=abc /home btrfs subvol=@home,compress=zstd:1 0 0
+UUID=abc /var btrfs subvol=@var 0 0
+UUID=abc /opt btrfs subvol=@opt 0 0";
+        let name = tools::root_subvol_name(fstab).unwrap();
+        assert_eq!(name.as_str(), "@");
+    }
+
+    #[test]
+    fn root_subvol_name_reads_fedora_default() {
+        let fstab = "UUID=abc / btrfs subvol=root,compress=zstd:1 0 0";
+        let name = tools::root_subvol_name(fstab).unwrap();
+        assert_eq!(name.as_str(), "root");
+    }
+
+    #[test]
+    fn root_subvol_name_errors_without_subvol_option() {
+        let fstab = "UUID=abc / btrfs defaults 0 0";
+        assert!(tools::root_subvol_name(fstab).is_err());
     }
 }
