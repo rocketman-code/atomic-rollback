@@ -1,4 +1,4 @@
-//! Snapshot lifecycle: create, list, delete. The dnf plugin calls
+//! Snapshot lifecycle: create, list, delete. The RPM plugin calls
 //! create before every transaction. List and delete delegate to
 //! btrfs-progs; delete adds an fstab guard that btrfs-progs lacks.
 

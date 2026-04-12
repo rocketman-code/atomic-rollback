@@ -298,8 +298,7 @@ pub fn btrfs_subvol_set_default(id: u64, mount_point: &str) -> Result<(), String
 }
 
 /// Creates a btrfs snapshot of src at dst.
-/// Captures stdout because btrfs prints to stdout, which conflicts
-/// with the libdnf5 actions plugin's pipe when called from the dnf hook.
+/// Captures stdout to prevent btrfs output from interfering with the caller.
 pub fn btrfs_subvol_snapshot(src: &str, dst: &str) -> Result<(), String> {
     run_stdout("btrfs", &["subvolume", "snapshot", src, dst]).map(|_| ())
 }
