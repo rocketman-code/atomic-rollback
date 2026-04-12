@@ -5,8 +5,28 @@
 use std::fs;
 use std::path::Path;
 
-use crate::consts::DEFAULT_SNAPSHOT_NAME;
 use crate::{parse, tools};
+
+/// Generates an auto-name for automatic snapshots using local time.
+/// Format: %Y-%m-%d_%H-%M-%S (e.g., "2026-04-11_15-30-07").
+fn generate_auto_name() -> String {
+    let now: std::time::SystemTime = std::time::SystemTime::now();
+    let duration = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs() as i64;
+
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&secs as *const i64, &mut tm) };
+
+    format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+    )
+}
 
 /// Result of a snapshot operation.
 pub enum SnapshotResult {
@@ -16,10 +36,14 @@ pub enum SnapshotResult {
 }
 
 /// Creates a snapshot of the root subvolume at the btrfs top level.
-/// Idempotent: returns Existed if the snapshot already exists.
+/// Auto-generates a timestamped name if none is given.
+/// Returns Existed if a snapshot with the same name already exists.
 /// Returns NotBtrfs if the root filesystem is not btrfs (nothing to protect).
 pub fn snapshot(name: Option<&str>) -> Result<SnapshotResult, String> {
-    let name = name.unwrap_or(DEFAULT_SNAPSHOT_NAME);
+    let name = match name {
+        Some(n) => n.to_string(),
+        None => generate_auto_name(),
+    };
     let (_, fstab) = tools::root_device()?;
     let root_subvol = match tools::root_subvol_name(&fstab) {
         Ok(s) => s,
