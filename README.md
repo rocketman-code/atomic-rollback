@@ -47,9 +47,9 @@ Snapshots are automatic via the RPM plugin (covers dnf, rpm, and any RPM-based p
 
 `sudo atomic-rollback migrate` full boot migration. Moves /boot from ext4 to Btrfs so kernels are included in snapshots. After rollback, the correct kernel boots automatically. Every step verifies the system remains bootable before proceeding. If any step fails, the system is unchanged.
 
-`sudo atomic-rollback snapshot` creates a snapshot of the current system state with the default name `root.pre-update`. Automatic via the RPM plugin; manual use for non-RPM changes. Idempotent: if the snapshot already exists, the command succeeds (existing protection is in place).
+`sudo atomic-rollback snapshot` creates a snapshot of the current system state with an auto-generated timestamped name. Automatic via the RPM plugin on every transaction; manual use for non-RPM changes.
 
-`sudo atomic-rollback snapshot create [name]` creates a snapshot with an optional name. Defaults to `root.pre-update` if no name is given.
+`sudo atomic-rollback snapshot create [name]` creates a snapshot with an optional name. If no name is given, an auto-generated timestamp is used.
 
 `sudo atomic-rollback snapshot list` shows available snapshots. System subvolumes (root, home, var) are excluded.
 
