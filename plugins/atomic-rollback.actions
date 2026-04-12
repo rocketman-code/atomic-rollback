@@ -1,6 +1,0 @@
-# Automatically snapshot the root subvolume before every dnf transaction.
-# If a snapshot already exists, the command exits 0 (idempotent).
-# If the snapshot cannot be created, dnf aborts (raise_error=1).
-# Install: /etc/dnf/libdnf5-plugins/actions.d/atomic-rollback.actions
-# Requires: libdnf5-plugin-actions atomic-rollback
-pre_transaction:::raise_error=1:atomic-rollback snapshot
