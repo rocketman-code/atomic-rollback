@@ -19,7 +19,6 @@ Requires:       grub2-tools
 Requires:       dracut
 Requires:       util-linux
 Requires:       systemd
-Requires:       libdnf5-plugin-actions
 
 ExclusiveArch:  x86_64 aarch64
 
@@ -44,7 +43,6 @@ cargo test --release --offline
 %install
 install -Dm755 target/release/%{name} %{buildroot}%{_bindir}/%{name}
 install -Dm755 hooks/90-%{name}.install %{buildroot}%{_prefix}/lib/kernel/install.d/90-%{name}.install
-install -Dm644 plugins/%{name}.actions %{buildroot}%{_sysconfdir}/dnf/libdnf5-plugins/actions.d/%{name}.actions
 install -Dm755 atomic_rollback.so %{buildroot}%{__plugindir}/atomic_rollback.so
 install -Dm644 plugins/macros.transaction_atomic_rollback %{buildroot}/usr/lib/rpm/macros.d/macros.transaction_atomic_rollback
 
@@ -53,7 +51,6 @@ install -Dm644 plugins/macros.transaction_atomic_rollback %{buildroot}/usr/lib/r
 %doc README.md
 %{_bindir}/%{name}
 %{_prefix}/lib/kernel/install.d/90-%{name}.install
-%config(noreplace) %{_sysconfdir}/dnf/libdnf5-plugins/actions.d/%{name}.actions
 %{__plugindir}/atomic_rollback.so
 /usr/lib/rpm/macros.d/macros.transaction_atomic_rollback
 

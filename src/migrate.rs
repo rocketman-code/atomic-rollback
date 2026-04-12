@@ -32,7 +32,7 @@ pub fn setup() -> Result<(), String> {
     tools::sync_filesystem("/")?;
 
     println!("Setup complete. Snapshots and rollback are enabled.");
-    println!("Install the dnf plugin for automatic pre-update snapshots.");
+    println!("The RPM plugin creates automatic pre-update snapshots.");
     Ok(())
 }
 

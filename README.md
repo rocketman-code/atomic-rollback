@@ -37,7 +37,7 @@ sudo atomic-rollback rollback
 sudo reboot
 ```
 
-With the dnf plugin installed, snapshots are automatic. Manual snapshots are still available for non-dnf changes: `sudo atomic-rollback snapshot create [name]`.
+Snapshots are automatic via the RPM plugin (covers dnf, rpm, and any RPM-based package manager). Manual snapshots are still available for non-RPM changes: `sudo atomic-rollback snapshot create [name]`.
 
 ## Commands
 
@@ -47,7 +47,7 @@ With the dnf plugin installed, snapshots are automatic. Manual snapshots are sti
 
 `sudo atomic-rollback migrate` full boot migration. Moves /boot from ext4 to Btrfs so kernels are included in snapshots. After rollback, the correct kernel boots automatically. Every step verifies the system remains bootable before proceeding. If any step fails, the system is unchanged.
 
-`sudo atomic-rollback snapshot` creates a snapshot of the current system state with the default name `root.pre-update`. Automatic via the dnf plugin; manual use for non-dnf changes. Idempotent: if the snapshot already exists, the command succeeds (existing protection is in place).
+`sudo atomic-rollback snapshot` creates a snapshot of the current system state with the default name `root.pre-update`. Automatic via the RPM plugin; manual use for non-RPM changes. Idempotent: if the snapshot already exists, the command succeeds (existing protection is in place).
 
 `sudo atomic-rollback snapshot create [name]` creates a snapshot with an optional name. Defaults to `root.pre-update` if no name is given.
 
@@ -79,7 +79,7 @@ A kernel-install hook is installed. When new kernels are installed via dnf, the 
 
 ## Automatic snapshots
 
-A libdnf5 actions plugin snapshots the root subvolume before every dnf transaction. If the snapshot cannot be created, dnf aborts. If a snapshot already exists, dnf proceeds with the existing protection. The plugin is installed automatically by the RPM.
+An RPM plugin snapshots the root subvolume before every RPM transaction (dnf, rpm, PackageKit, or any other RPM-based frontend). If the snapshot cannot be created, the transaction aborts. If a snapshot already exists, the transaction proceeds with the existing protection.
 
 ## Guarantees
 
