@@ -26,6 +26,7 @@ enum Command {
     Snapshot(SnapshotCommand),
     Rollback { name: String },
     KernelHook { command: String, kver: String },
+    EnsureHooks,
 }
 
 enum SnapshotCommand {
@@ -115,6 +116,7 @@ fn parse_args(args: &[String]) -> Command {
                 name: args.get(2).cloned().unwrap_or_else(|| consts::DEFAULT_SNAPSHOT_NAME.into()),
             }
         }
+        "ensure-hooks" => Command::EnsureHooks,
         "kernel-hook" => {
             // kernel-install calls hooks for events we may not handle.
             // Missing args = nothing to do.
@@ -219,6 +221,9 @@ fn main() {
                 std::process::exit(1);
             }
             println!("Rollback complete. Reboot to activate.");
+        }
+        Command::EnsureHooks => {
+            kernel_hook::ensure_hooks();
         }
         Command::KernelHook { command, kver } => {
             if let Err(e) = kernel_hook::handle(&command, &kver) {

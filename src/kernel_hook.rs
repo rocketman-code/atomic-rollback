@@ -7,6 +7,51 @@ use std::path::Path;
 
 use crate::{check, parse, platform::FEDORA as P, swap, tools};
 
+const HOOK_PATH: &str = "/usr/lib/kernel/install.d/90-atomic-rollback.install";
+const HOOK_CONTENT: &str = "#!/usr/bin/bash\n\
+# kernel-install plugin for atomic-rollback.\n\
+# Thin dispatcher. All logic lives in the Rust binary, inside the proof boundary.\n\
+exec /usr/bin/atomic-rollback kernel-hook \"$@\"\n";
+
+/// Writes the kernel-install hook if the system is migrated and the hook is missing.
+/// Called by `migrate` (as a migration artifact) and by `ensure-hooks` (for upgrades).
+/// Non-fatal: logs errors but always returns Ok for use in %posttrans context.
+pub fn ensure_hooks() {
+    let root_fstype = match tools::run_stdout("findmnt", &["-n", "-o", "FSTYPE", "/"]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if root_fstype != "btrfs" {
+        return;
+    }
+    if tools::is_mountpoint(Path::new("/boot")) {
+        return;
+    }
+
+    let hook = Path::new(HOOK_PATH);
+    if hook.exists() {
+        return;
+    }
+
+    if let Some(parent) = hook.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("atomic-rollback: cannot create {}: {e}", parent.display());
+            return;
+        }
+    }
+
+    if let Err(e) = fs::write(hook, HOOK_CONTENT) {
+        eprintln!("atomic-rollback: cannot write {HOOK_PATH}: {e}");
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(hook, fs::Permissions::from_mode(0o755));
+    }
+}
+
 /// Dispatched by /usr/lib/kernel/install.d/90-atomic-rollback.install.
 /// Only acts when root is btrfs and /boot is not a separate mount
 /// (i.e. the full migration has been applied).

@@ -75,7 +75,7 @@ The /boot/grub2 directory is set to NOCOW (chattr +C) and grubenv is recreated. 
 
 save_env is stripped from grub.cfg. GRUB's Btrfs driver is read-only. save_env requires write access. Since writing is impossible, save_env is a guaranteed failure. Removing it prevents an error message on every boot.
 
-A kernel-install hook is installed. When new kernels are installed via dnf, the hook creates symlinks and ensures boot entry paths are correct. This keeps the system bootable across kernel updates.
+A kernel-install hook is written by `migrate` as a migration artifact. When new kernels are installed, the hook creates symlinks and ensures boot entry paths are correct. This keeps the system bootable across kernel updates. The hook persists after package removal because `migrate` owns it, not the RPM.
 
 ## Automatic snapshots
 
