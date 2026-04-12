@@ -79,6 +79,8 @@ pub fn migrate() -> Result<(), String> {
     // and set-default are in the btrfs in-memory journal only.
     tools::sync_filesystem("/")?;
 
+    crate::kernel_hook::ensure_hooks();
+
     println!("Migration complete. All gates passed.");
     Ok(())
 }
