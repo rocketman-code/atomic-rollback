@@ -1,11 +1,88 @@
-//! Snapshot lifecycle: create, list, delete. The RPM plugin calls
-//! create before every transaction. List and delete delegate to
-//! btrfs-progs; delete adds an fstab guard that btrfs-progs lacks.
+//! Snapshot lifecycle: create, list, delete, retain. The RPM plugin
+//! calls create before every transaction. Retention evicts the oldest
+//! automatic snapshots when the count exceeds MAX_SNAPSHOTS. List and
+//! delete delegate to btrfs-progs; delete adds an fstab guard that
+//! btrfs-progs lacks.
 
 use std::fs;
 use std::path::Path;
 
-use crate::{parse, tools};
+use crate::{consts, parse, tools};
+
+/// Returns true if a name matches the auto-generated snapshot format (YYYY-MM-DD_HH-MM-SS).
+fn is_auto_name(name: &str) -> bool {
+    if name.len() != 19 { return false; }
+    let b = name.as_bytes();
+    b[0..4].iter().all(u8::is_ascii_digit)
+        && b[4] == b'-' && b[7] == b'-' && b[10] == b'_'
+        && b[13] == b'-' && b[16] == b'-'
+        && b[5..7].iter().all(u8::is_ascii_digit)
+        && b[8..10].iter().all(u8::is_ascii_digit)
+        && b[11..13].iter().all(u8::is_ascii_digit)
+        && b[14..16].iter().all(u8::is_ascii_digit)
+        && b[17..19].iter().all(u8::is_ascii_digit)
+}
+
+/// Parses MAX_SNAPSHOTS from config file content.
+fn parse_max_snapshots(content: &str) -> usize {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("MAX_SNAPSHOTS=") {
+            let value = value.trim().trim_matches('"');
+            if let Ok(n) = value.parse::<usize>() {
+                return n;
+            }
+        }
+    }
+    consts::MAX_SNAPSHOTS
+}
+
+/// Reads MAX_SNAPSHOTS from the config file, falling back to the compiled-in default.
+fn max_snapshots() -> usize {
+    match fs::read_to_string(consts::CONFIG_PATH) {
+        Ok(content) => parse_max_snapshots(&content),
+        Err(_) => consts::MAX_SNAPSHOTS,
+    }
+}
+
+/// Evicts the oldest auto-named snapshots if count exceeds MAX_SNAPSHOTS.
+/// User-named snapshots are never touched. Failures are logged, not fatal.
+fn retain_auto_snapshots() {
+    let max = max_snapshots();
+    if max == 0 { return; }
+
+    let protected = match fstab_subvol_names() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("Retention warning: {e}"); return; }
+    };
+    let entries = match tools::btrfs_subvol_list("/") {
+        Ok(e) => e,
+        Err(e) => { eprintln!("Retention warning: {e}"); return; }
+    };
+
+    let mut auto_entries: Vec<&tools::SubvolEntry> = entries.iter()
+        .filter(|e| is_auto_name(&e.path))
+        .filter(|e| !protected.iter().any(|p| p.as_str() == e.path))
+        .collect();
+
+    if auto_entries.len() <= max {
+        return;
+    }
+
+    auto_entries.sort_by_key(|e| e.id);
+    let to_evict = auto_entries.len() - max;
+
+    eprintln!("Keeping {max} automatic snapshots, removing oldest.");
+    for entry in auto_entries.iter().take(to_evict) {
+        match delete(&entry.path) {
+            Ok(..) => eprintln!("Snapshot '{}' with ID {} removed.", entry.path, entry.id),
+            Err(e) => eprintln!("Warning: failed to remove '{}': {e}", entry.path),
+        }
+    }
+}
 
 /// Generates an auto-name for automatic snapshots using local time.
 /// Format: %Y-%m-%d_%H-%M-%S (e.g., "2026-04-11_15-30-07").
@@ -40,8 +117,16 @@ pub enum SnapshotResult {
 /// Returns Existed if a snapshot with the same name already exists.
 /// Returns NotBtrfs if the root filesystem is not btrfs (nothing to protect).
 pub fn snapshot(name: Option<&str>) -> Result<SnapshotResult, String> {
+    let is_auto = name.is_none();
     let name = match name {
-        Some(n) => n.to_string(),
+        Some(n) => {
+            if is_auto_name(n) {
+                return Err(format!(
+                    "Name '{n}' uses the format reserved for automatic snapshots. \
+                     Choose a different name."));
+            }
+            n.to_string()
+        }
         None => generate_auto_name(),
     };
     let (_, fstab) = tools::root_device()?;
@@ -50,14 +135,22 @@ pub fn snapshot(name: Option<&str>) -> Result<SnapshotResult, String> {
         Err(_) => return Ok(SnapshotResult::NotBtrfs),
     };
 
-    tools::with_toplevel(|toplevel| {
+    let result = tools::with_toplevel(|toplevel| {
         let snap_path = format!("{toplevel}/{name}");
         if Path::new(&snap_path).exists() {
             return Ok(SnapshotResult::Existed(name.to_string()));
         }
         tools::btrfs_subvol_snapshot(&format!("{toplevel}/{}", root_subvol.as_str()), &snap_path)?;
         Ok(SnapshotResult::Created(name.to_string()))
-    })
+    })?;
+
+    if is_auto {
+        if let SnapshotResult::Created(_) = &result {
+            retain_auto_snapshots();
+        }
+    }
+
+    Ok(result)
 }
 
 /// Returns top-level subvolume names, excluding fstab system subvolumes.
@@ -143,6 +236,30 @@ UUID=abc /home btrfs subvol=home 0 0";
         let names = fstab_subvol_names_from(fstab);
         let names: Vec<&str> = names.iter().map(|n| n.as_str()).collect();
         assert_eq!(names, vec!["root", "home"]);
+    }
+
+    #[test]
+    fn auto_name_detection() {
+        assert!(super::is_auto_name("2026-04-11_15-30-07"));
+        assert!(super::is_auto_name("1999-01-01_00-00-00"));
+        assert!(!super::is_auto_name("my-snapshot"));
+        assert!(!super::is_auto_name("root.pre-update"));
+        assert!(!super::is_auto_name("2026-04-11_15-30-0"));  // 18 chars
+        assert!(!super::is_auto_name("2026-04-11_15-30-070")); // 20 chars
+        assert!(!super::is_auto_name("2026-04-11 15:30:07")); // wrong separators
+        assert!(!super::is_auto_name("abcd-ef-gh_ij-kl-mn")); // letters
+    }
+
+    #[test]
+    fn config_parsing() {
+        assert_eq!(super::parse_max_snapshots("MAX_SNAPSHOTS=50"), 50);
+        assert_eq!(super::parse_max_snapshots("MAX_SNAPSHOTS=10"), 10);
+        assert_eq!(super::parse_max_snapshots("MAX_SNAPSHOTS=\"25\""), 25);
+        assert_eq!(super::parse_max_snapshots("# comment\nMAX_SNAPSHOTS=30\n"), 30);
+        assert_eq!(super::parse_max_snapshots(""), crate::consts::MAX_SNAPSHOTS);
+        assert_eq!(super::parse_max_snapshots("MAX_SNAPSHOTS=abc"), crate::consts::MAX_SNAPSHOTS);
+        assert_eq!(super::parse_max_snapshots("OTHER_KEY=50"), crate::consts::MAX_SNAPSHOTS);
+        assert_eq!(super::parse_max_snapshots("MAX_SNAPSHOTS=0"), 0);
     }
 
     #[test]
