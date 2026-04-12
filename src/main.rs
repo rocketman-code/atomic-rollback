@@ -44,7 +44,7 @@ fn print_help() {
     eprintln!("  atomic-rollback check                verify the system is bootable");
     eprintln!("  atomic-rollback setup                separate /var, enable snapshots and rollback");
     eprintln!("  atomic-rollback migrate              full boot migration for complete kernel rollback");
-    eprintln!("  atomic-rollback snapshot             create snapshot (default name)");
+    eprintln!("  atomic-rollback snapshot             create snapshot (auto-named)");
     eprintln!("  atomic-rollback snapshot create [N]  create snapshot with optional name");
     eprintln!("  atomic-rollback snapshot list        show available snapshots");
     eprintln!("  atomic-rollback snapshot delete <N>  delete a snapshot by name");
@@ -53,7 +53,7 @@ fn print_help() {
 
 fn print_snapshot_help() {
     eprintln!("usage:");
-    eprintln!("  atomic-rollback snapshot             create snapshot (default name)");
+    eprintln!("  atomic-rollback snapshot             create snapshot (auto-named)");
     eprintln!("  atomic-rollback snapshot create [N]  create snapshot with optional name");
     eprintln!("  atomic-rollback snapshot list        show available snapshots");
     eprintln!("  atomic-rollback snapshot delete <N>  delete a snapshot by name");
