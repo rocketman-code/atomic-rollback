@@ -44,6 +44,7 @@ cargo test --release --offline
 install -Dm755 target/release/%{name} %{buildroot}%{_bindir}/%{name}
 install -Dm755 atomic_rollback.so %{buildroot}%{__plugindir}/atomic_rollback.so
 install -Dm644 plugins/macros.transaction_atomic_rollback %{buildroot}/usr/lib/rpm/macros.d/macros.transaction_atomic_rollback
+install -Dm644 %{name}.conf %{buildroot}%{_sysconfdir}/%{name}.conf
 
 %files
 %license LICENSE
@@ -51,6 +52,7 @@ install -Dm644 plugins/macros.transaction_atomic_rollback %{buildroot}/usr/lib/r
 %{_bindir}/%{name}
 %{__plugindir}/atomic_rollback.so
 /usr/lib/rpm/macros.d/macros.transaction_atomic_rollback
+%config(noreplace) %{_sysconfdir}/%{name}.conf
 
 %posttrans -p /bin/sh
 /usr/bin/atomic-rollback ensure-hooks 2>/dev/null || :

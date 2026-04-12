@@ -37,7 +37,7 @@ sudo atomic-rollback rollback
 sudo reboot
 ```
 
-Snapshots are automatic via the RPM plugin (covers dnf, rpm, and any RPM-based package manager). Manual snapshots are still available for non-RPM changes: `sudo atomic-rollback snapshot create [name]`.
+Snapshots are automatic via the RPM plugin (covers dnf, rpm, and any RPM-based package manager). Each transaction creates a new timestamped snapshot. Old automatic snapshots are removed when the count exceeds MAX_SNAPSHOTS (default 50, configurable in `/etc/atomic-rollback.conf`). User-named snapshots are never automatically removed. Manual snapshots are still available for non-RPM changes: `sudo atomic-rollback snapshot create [name]`.
 
 ## Commands
 
@@ -79,7 +79,7 @@ A kernel-install hook is written by `migrate` as a migration artifact. When new 
 
 ## Automatic snapshots
 
-An RPM plugin snapshots the root subvolume before every RPM transaction (dnf, rpm, PackageKit, or any other RPM-based frontend). If the snapshot cannot be created, the transaction aborts. If a snapshot already exists, the transaction proceeds with the existing protection.
+An RPM plugin snapshots the root subvolume before every RPM transaction (dnf, rpm, PackageKit, or any other RPM-based frontend). If the snapshot cannot be created, the transaction aborts. When the number of automatic snapshots exceeds MAX_SNAPSHOTS, the oldest are removed. User-named snapshots are never counted against this limit and are never automatically removed. MAX_SNAPSHOTS defaults to 50 and can be changed in `/etc/atomic-rollback.conf`.
 
 ## Guarantees
 
