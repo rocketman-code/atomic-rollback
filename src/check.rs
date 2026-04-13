@@ -1,4 +1,4 @@
-//! BOOTS predicate: evaluates whether the system is bootable by tracing
+//! BOOTS predicate: evaluates whether the boot chain is valid by tracing
 //! the boot chain from UEFI firmware through GRUB to the root filesystem.
 //! Each check corresponds to a link in the chain:
 //!   UEFI -> shim -> GRUB -> grub.cfg -> BLS entries -> kernel -> root mount -> fstab
