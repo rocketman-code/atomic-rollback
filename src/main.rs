@@ -176,10 +176,10 @@ fn main() {
         Command::Snapshot(sub) => match sub {
             SnapshotCommand::Create { name } => {
                 match snapshot::snapshot(name.as_deref()) {
-                    Ok(snapshot::SnapshotResult::Created(name)) =>
-                        eprintln!("Snapshot '{name}' created."),
-                    Ok(snapshot::SnapshotResult::Existed(name)) =>
-                        eprintln!("Snapshot '{name}' already exists."),
+                    Ok(snapshot::SnapshotResult::Created(name, id)) =>
+                        eprintln!("Snapshot '{name}' with ID {id} created."),
+                    Ok(snapshot::SnapshotResult::Existed(name, id)) =>
+                        eprintln!("Snapshot '{name}' with ID {id} already exists."),
                     Ok(snapshot::SnapshotResult::NotBtrfs) => {}
                     Err(e) => {
                         eprintln!("Snapshot failed: {e}");
@@ -206,7 +206,7 @@ fn main() {
             }
             SnapshotCommand::Delete { name } => {
                 match snapshot::delete(&name) {
-                    Ok(()) => eprintln!("Deleted snapshot '{name}'."),
+                    Ok(id) => eprintln!("Snapshot '{name}' with ID {id} deleted."),
                     Err(e) => {
                         eprintln!("Snapshot delete failed: {e}");
                         std::process::exit(1);

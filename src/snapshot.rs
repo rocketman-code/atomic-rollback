@@ -107,8 +107,8 @@ fn generate_auto_name() -> String {
 
 /// Result of a snapshot operation.
 pub enum SnapshotResult {
-    Created(String),
-    Existed(String),
+    Created(String, u64),
+    Existed(String, u64),
     NotBtrfs,
 }
 
@@ -135,22 +135,26 @@ pub fn snapshot(name: Option<&str>) -> Result<SnapshotResult, String> {
         Err(_) => return Ok(SnapshotResult::NotBtrfs),
     };
 
-    let result = tools::with_toplevel(|toplevel| {
+    let (name, created) = tools::with_toplevel(|toplevel| {
         let snap_path = format!("{toplevel}/{name}");
         if Path::new(&snap_path).exists() {
-            return Ok(SnapshotResult::Existed(name.to_string()));
+            return Ok((name.to_string(), false));
         }
         tools::btrfs_subvol_snapshot(&format!("{toplevel}/{}", root_subvol.as_str()), &snap_path)?;
-        Ok(SnapshotResult::Created(name.to_string()))
+        Ok((name.to_string(), true))
     })?;
 
-    if is_auto {
-        if let SnapshotResult::Created(_) = &result {
-            retain_auto_snapshots();
-        }
+    let id = tools::btrfs_subvol_id_by_name("/", &tools::SubvolName::new(name.clone()))?;
+
+    if is_auto && created {
+        retain_auto_snapshots();
     }
 
-    Ok(result)
+    if created {
+        Ok(SnapshotResult::Created(name, id))
+    } else {
+        Ok(SnapshotResult::Existed(name, id))
+    }
 }
 
 /// Returns top-level subvolume names, excluding fstab system subvolumes.
@@ -167,7 +171,7 @@ pub fn list() -> Result<Vec<String>, String> {
 
 /// Refuses subvolumes referenced by fstab (system subvolumes).
 /// Mounted and default subvolume protection from kernel and btrfs-progs.
-pub fn delete(name: &str) -> Result<(), String> {
+pub fn delete(name: &str) -> Result<u64, String> {
     let protected = fstab_subvol_names()?;
     if protected.contains(&tools::SubvolName::new(name.to_string())) {
         return Err(format!(
@@ -177,7 +181,7 @@ pub fn delete(name: &str) -> Result<(), String> {
 
     let id = tools::btrfs_subvol_id_by_name("/", &tools::SubvolName::new(name.to_string()))?;
     tools::run_stdout("btrfs", &["subvolume", "delete", "--subvolid", &id.to_string(), "/"])
-        .map(|_| ())
+        .map(|_| id)
 }
 
 // System subvolumes from fstab. These must never be deleted.
