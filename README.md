@@ -51,7 +51,7 @@ Snapshots are automatic via the RPM plugin (covers dnf, rpm, and any RPM-based p
 
 `sudo atomic-rollback snapshot create [name]` creates a snapshot with an optional name. If no name is given, an auto-generated timestamp is used.
 
-`sudo atomic-rollback snapshot list` shows available snapshots. System subvolumes (root, home, var) are excluded.
+`sudo atomic-rollback snapshot list` shows available snapshots with btrfs subvolume ID, name, and creation time. Sorted by ID (chronological). System subvolumes (root, home, var) are excluded.
 
 `sudo atomic-rollback snapshot delete <name>` deletes a snapshot. Refuses subvolumes referenced by fstab (system subvolumes). Mounted and default subvolume protection is provided by the kernel and btrfs-progs.
 

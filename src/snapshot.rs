@@ -157,15 +157,38 @@ pub fn snapshot(name: Option<&str>) -> Result<SnapshotResult, String> {
     }
 }
 
-/// Returns top-level subvolume names, excluding fstab system subvolumes.
-pub fn list() -> Result<Vec<String>, String> {
+/// Snapshot metadata for the list command.
+pub struct SnapshotInfo {
+    pub id: u64,
+    pub name: String,
+    pub created: String,
+}
+
+/// Returns snapshot info (ID, name, creation time), excluding fstab system subvolumes.
+/// Sorted by ID ascending (chronological order).
+pub fn list() -> Result<Vec<SnapshotInfo>, String> {
     let protected = fstab_subvol_names()?;
     let entries = tools::btrfs_subvol_list("/")?;
-    let mut snapshots: Vec<String> = entries.iter()
+    let snapshot_entries: Vec<&tools::SubvolEntry> = entries.iter()
         .filter(|e| !protected.iter().any(|p| p.as_str() == e.path))
-        .map(|e| e.path.clone())
         .collect();
-    snapshots.sort();
+
+    let mut snapshots = Vec::new();
+    tools::with_toplevel(|toplevel| {
+        for entry in &snapshot_entries {
+            let path = format!("{toplevel}/{}", entry.path);
+            let created = tools::btrfs_subvol_creation_time(&path)
+                .unwrap_or_else(|_| "unknown".to_string());
+            snapshots.push(SnapshotInfo {
+                id: entry.id,
+                name: entry.path.clone(),
+                created,
+            });
+        }
+        Ok(())
+    })?;
+
+    snapshots.sort_by_key(|s| s.id);
     Ok(snapshots)
 }
 
