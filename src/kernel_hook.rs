@@ -88,7 +88,7 @@ fn handle_add(kver: &str) -> Result<(), String> {
     // Symlinks and BLS swap are in the btrfs in-memory journal only.
     tools::sync_filesystem("/")?;
 
-    // Gate: verify the system is still bootable.
+    // Gate: verify the boot chain is still valid.
     match check::verify_bootable(Path::new("/")) {
         check::BootStatus::Pass | check::BootStatus::Warn => Ok(()),
         check::BootStatus::Fail(failures) => {

@@ -1,4 +1,4 @@
-//! Rollback: verify snapshot is bootable, swap root subvolume names
+//! Rollback: verify boot chain for snapshot, swap root subvolume names
 //! via RENAME_EXCHANGE, update default subvolume. Undoes the swap
 //! if set-default fails.
 
@@ -25,7 +25,7 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
         return Err(format!("snapshot '{snapshot_name}' not found at top-level"));
     }
 
-    println!("\n  Verifying snapshot '{snapshot_name}' is bootable...");
+    println!("\n  Verifying boot chain for snapshot '{snapshot_name}'...");
     match check::verify_snapshot_bootable(Path::new(&snapshot_path)) {
         check::BootStatus::Pass | check::BootStatus::Warn => {
             println!("  Snapshot verified.\n");
@@ -37,7 +37,7 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
             }
             tools::umount(toplevel)?;
             let _ = std::fs::remove_dir(toplevel);
-            return Err("rollback aborted: snapshot is not bootable".into());
+            return Err("rollback aborted: boot chain invalid for snapshot".into());
         }
     }
 
