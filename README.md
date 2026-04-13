@@ -53,9 +53,9 @@ Snapshots are automatic via the RPM plugin (covers dnf, rpm, and any RPM-based p
 
 `sudo atomic-rollback snapshot list` shows available snapshots with btrfs subvolume ID, name, and creation time. Sorted by ID (chronological). System subvolumes (root, home, var) are excluded.
 
-`sudo atomic-rollback snapshot delete <name>` deletes a snapshot. Refuses subvolumes referenced by fstab (system subvolumes). Mounted and default subvolume protection is provided by the kernel and btrfs-progs.
+`sudo atomic-rollback snapshot delete <id|name>` deletes a snapshot by btrfs subvolume ID (numeric) or name. Refuses subvolumes referenced by fstab (system subvolumes). Mounted and default subvolume protection is provided by the kernel and btrfs-progs.
 
-`sudo atomic-rollback rollback [name]` restores the system to a snapshot. Defaults to `root.pre-update`. Reboot after rollback. The previous (broken) state is preserved and can be inspected or deleted.
+`sudo atomic-rollback rollback [id|name]` restores the system to a snapshot. Accepts a btrfs subvolume ID (numeric) or name. Defaults to the most recent snapshot. Re-runnable before reboot (last swap wins). Reboot after rollback. The previous (broken) state is preserved and can be inspected or deleted.
 
 ## What the migration changes
 
