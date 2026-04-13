@@ -24,7 +24,7 @@ enum Command {
     Setup,
     Migrate,
     Snapshot(SnapshotCommand),
-    Rollback { name: String },
+    Rollback { name: Option<String> },
     KernelHook { command: String, kver: String },
     EnsureHooks,
 }
@@ -47,8 +47,8 @@ fn print_help() {
     eprintln!("  atomic-rollback snapshot             create snapshot (auto-named)");
     eprintln!("  atomic-rollback snapshot create [N]  create snapshot with optional name");
     eprintln!("  atomic-rollback snapshot list        show available snapshots");
-    eprintln!("  atomic-rollback snapshot delete <N>  delete a snapshot by name");
-    eprintln!("  atomic-rollback rollback [name]      roll back to a snapshot");
+    eprintln!("  atomic-rollback snapshot delete <N>  delete a snapshot by ID or name");
+    eprintln!("  atomic-rollback rollback [id|name]    roll back to a snapshot");
 }
 
 fn print_snapshot_help() {
@@ -56,7 +56,7 @@ fn print_snapshot_help() {
     eprintln!("  atomic-rollback snapshot             create snapshot (auto-named)");
     eprintln!("  atomic-rollback snapshot create [N]  create snapshot with optional name");
     eprintln!("  atomic-rollback snapshot list        show available snapshots");
-    eprintln!("  atomic-rollback snapshot delete <N>  delete a snapshot by name");
+    eprintln!("  atomic-rollback snapshot delete <N>  delete a snapshot by ID or name");
 }
 
 // --- Parsing ---
@@ -81,7 +81,7 @@ fn parse_snapshot(args: &[String]) -> SnapshotCommand {
             match args.get(3) {
                 Some(name) => SnapshotCommand::Delete { name: name.clone() },
                 None => {
-                    eprintln!("Usage: atomic-rollback snapshot delete <name>");
+                    eprintln!("Usage: atomic-rollback snapshot delete <id|name>");
                     std::process::exit(2);
                 }
             }
@@ -113,7 +113,7 @@ fn parse_args(args: &[String]) -> Command {
         "rollback" => {
             if is_help(args.get(2)) { print_help(); std::process::exit(0); }
             Command::Rollback {
-                name: args.get(2).cloned().unwrap_or_else(|| consts::DEFAULT_SNAPSHOT_NAME.into()),
+                name: args.get(2).cloned(),
             }
         }
         "ensure-hooks" => Command::EnsureHooks,
@@ -208,8 +208,12 @@ fn main() {
                 }
             }
             SnapshotCommand::Delete { name } => {
-                match snapshot::delete(&name) {
-                    Ok(id) => eprintln!("Snapshot '{name}' with ID {id} deleted."),
+                let (resolved, _) = match snapshot::resolve_snapshot(&name) {
+                    Ok(r) => r,
+                    Err(e) => { eprintln!("Snapshot delete failed: {e}"); std::process::exit(1); }
+                };
+                match snapshot::delete(&resolved) {
+                    Ok(id) => eprintln!("Snapshot '{resolved}' with ID {id} deleted."),
                     Err(e) => {
                         eprintln!("Snapshot delete failed: {e}");
                         std::process::exit(1);
@@ -218,7 +222,17 @@ fn main() {
             }
         }
         Command::Rollback { name } => {
-            println!("atomic-rollback: rolling back to '{name}'\n");
+            let (name, id) = match name {
+                Some(arg) => match snapshot::resolve_snapshot(&arg) {
+                    Ok(r) => r,
+                    Err(e) => { eprintln!("Rollback failed: {e}"); std::process::exit(1); }
+                },
+                None => match snapshot::most_recent_snapshot() {
+                    Ok(r) => r,
+                    Err(e) => { eprintln!("Rollback failed: {e}"); std::process::exit(1); }
+                },
+            };
+            println!("atomic-rollback: rolling back to '{name}' (ID {id})\n");
             if let Err(e) = rollback::rollback(&name) {
                 eprintln!("Rollback failed: {e}");
                 std::process::exit(1);
