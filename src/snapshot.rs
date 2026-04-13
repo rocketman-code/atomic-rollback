@@ -192,6 +192,35 @@ pub fn list() -> Result<Vec<SnapshotInfo>, String> {
     Ok(snapshots)
 }
 
+/// Resolves a snapshot argument to (name, id).
+/// Numeric arguments are resolved as btrfs subvolume IDs.
+/// Non-numeric arguments are resolved as snapshot names.
+pub fn resolve_snapshot(arg: &str) -> Result<(String, u64), String> {
+    let entries = tools::btrfs_subvol_list("/")?;
+    if let Ok(id) = arg.parse::<u64>() {
+        entries.iter()
+            .find(|e| e.id == id)
+            .map(|e| (e.path.clone(), e.id))
+            .ok_or_else(|| format!("no snapshot with ID {id}"))
+    } else {
+        entries.iter()
+            .find(|e| e.path == arg)
+            .map(|e| (e.path.clone(), e.id))
+            .ok_or_else(|| format!("snapshot '{arg}' not found"))
+    }
+}
+
+/// Returns the most recent snapshot (highest btrfs subvolume ID), excluding system subvolumes.
+pub fn most_recent_snapshot() -> Result<(String, u64), String> {
+    let protected = fstab_subvol_names()?;
+    let entries = tools::btrfs_subvol_list("/")?;
+    entries.iter()
+        .filter(|e| !protected.iter().any(|p| p.as_str() == e.path))
+        .max_by_key(|e| e.id)
+        .map(|e| (e.path.clone(), e.id))
+        .ok_or_else(|| "no snapshots found".to_string())
+}
+
 /// Refuses subvolumes referenced by fstab (system subvolumes).
 /// Mounted and default subvolume protection from kernel and btrfs-progs.
 pub fn delete(name: &str) -> Result<u64, String> {
