@@ -41,7 +41,7 @@ fn print_help() {
     eprintln!("atomic-rollback: atomic system rollback for Fedora via Btrfs subvolume swap");
     eprintln!();
     eprintln!("usage:");
-    eprintln!("  atomic-rollback check                verify the system is bootable");
+    eprintln!("  atomic-rollback check                verify the boot chain is valid");
     eprintln!("  atomic-rollback setup                separate /var, enable snapshots and rollback");
     eprintln!("  atomic-rollback migrate              full boot migration for complete kernel rollback");
     eprintln!("  atomic-rollback snapshot             create snapshot (auto-named)");
@@ -143,18 +143,18 @@ fn main() {
 
     match parse_args(&args) {
         Command::Check { root } => {
-            println!("atomic-rollback: checking system bootability\n");
+            println!("atomic-rollback: verifying boot chain\n");
             match check::verify_bootable(Path::new(&root)) {
                 check::BootStatus::Pass => {
-                    println!("\nSystem is bootable.");
+                    println!("\nBoot chain is valid.");
                 }
                 check::BootStatus::Warn => {
-                    println!("\nSystem is bootable (with warnings).");
+                    println!("\nBoot chain is valid (with warnings).");
                     std::process::exit(2);
                 }
                 check::BootStatus::Fail(failures) => {
                     for f in &failures { eprintln!("  {f}"); }
-                    println!("\nSystem has boot problems.");
+                    println!("\nBoot chain has problems.");
                     std::process::exit(1);
                 }
             }
