@@ -303,6 +303,22 @@ pub fn btrfs_subvol_snapshot(src: &str, dst: &str) -> Result<(), String> {
     run_stdout("btrfs", &["subvolume", "snapshot", src, dst]).map(|_| ())
 }
 
+/// Returns the creation time of a subvolume as a local-time string (%Y-%m-%d %H:%M:%S).
+/// The path must be the full path to the subvolume (e.g., via a toplevel mount).
+pub fn btrfs_subvol_creation_time(path: &str) -> Result<String, String> {
+    let out = run_stdout("btrfs", &["subvolume", "show", path])?;
+    for line in out.lines() {
+        let line = line.trim();
+        if let Some(raw) = line.strip_prefix("Creation time:") {
+            let raw = raw.trim();
+            // Drop the timezone suffix (e.g., " -0700") to get local-time datetime
+            let datetime = raw.rsplit_once(' ').map(|(dt, _tz)| dt).unwrap_or(raw);
+            return Ok(datetime.to_string());
+        }
+    }
+    Err(format!("no creation time found in btrfs subvolume show output for {path}"))
+}
+
 /// Looks up a subvolume's ID by name.
 pub fn btrfs_subvol_id_by_name(mount_point: &str, name: &SubvolName) -> Result<u64, String> {
     let entries = btrfs_subvol_list(mount_point)?;

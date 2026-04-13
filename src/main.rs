@@ -189,12 +189,15 @@ fn main() {
             }
             SnapshotCommand::List => {
                 match snapshot::list() {
-                    Ok(names) => {
-                        if names.is_empty() {
+                    Ok(snapshots) => {
+                        if snapshots.is_empty() {
                             eprintln!("No snapshots found.");
                         } else {
-                            for name in &names {
-                                println!("{name}");
+                            let id_w = snapshots.iter().map(|s| s.id.to_string().len()).max().unwrap_or(2).max(2);
+                            let name_w = snapshots.iter().map(|s| s.name.len()).max().unwrap_or(4).max(4);
+                            println!("{:<id_w$}  {:<name_w$}  {}", "ID", "Name", "Created");
+                            for s in &snapshots {
+                                println!("{:<id_w$}  {:<name_w$}  {}", s.id, s.name, s.created);
                             }
                         }
                     }
