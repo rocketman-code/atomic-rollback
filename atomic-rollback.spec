@@ -55,6 +55,7 @@ install -Dm644 %{name}.conf %{buildroot}%{_sysconfdir}/%{name}.conf
 %config(noreplace) %{_sysconfdir}/%{name}.conf
 
 %posttrans -p /bin/sh
+/usr/bin/atomic-rollback rename-legacy-snapshot 2>/dev/null || :
 /usr/bin/atomic-rollback ensure-hooks 2>/dev/null || :
 exit 0
 
