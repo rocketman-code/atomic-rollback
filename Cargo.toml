@@ -1,6 +1,6 @@
 [package]
 name = "atomic-rollback"
-version = "0.3.8"
+version = "0.4.0"
 edition = "2024"
 description = "Atomic system rollback for Fedora via Btrfs RENAME_EXCHANGE subvolume swap"
 license = "GPL-3.0-only"

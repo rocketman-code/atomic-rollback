@@ -2,6 +2,31 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [0.4.0] - 2026-04-14
+
+### Added
+
+- Automatic snapshots use rolling timestamp names in `%Y-%m-%d_%H-%M-%S` format instead of a fixed `root.pre-update`. Every RPM transaction creates a new snapshot; the history is no longer overwritten on each upgrade. Closes #9.
+- Snapshot retention: the tool keeps the most recent `MAX_SNAPSHOTS` automatic snapshots (default 50, configurable in `/etc/atomic-rollback.conf`) and evicts older ones. User-named snapshots are never counted against the limit and are never evicted; unbounded accumulation of user-named snapshots remains the expected behavior.
+- `snapshot list` shows a three-column table: btrfs subvolume ID, name, and creation time. Sorted by ID (chronological).
+- `rollback [id|name]` and `snapshot delete <id|name>` accept btrfs subvolume IDs (integers) in addition to names. `rollback` with no arguments defaults to the most recent snapshot (highest ID). The IDs are btrfs filesystem primitives, monotonic and never reused, surfaced as the user-facing handle without any atomic-rollback state.
+- `snapshot create` output includes the btrfs subvolume ID (e.g. `Snapshot 'foo' with ID 123 created.`) so the new snapshot can be referenced numerically in subsequent commands without running `list` first.
+- `check` and `rollback` show rollback scope: directories protected by separate btrfs subvolumes are listed as SAFE (unaffected by rollback), directories inside the root subvolume are listed as RISK (will revert on rollback). Derived from fstab `subvol=` entries and mountpoint checks on top-level directories.
+- `--version` and `-V` print the installed version. Output format: `atomic-rollback v<version>`, one line to stdout, matching the `btrfs-progs v6.17` convention.
+
+### Changed
+
+- `check` output and user-facing documentation use "boot chain" terminology instead of "system bootable." The tool verifies boot chain structural validity (the formal model's scope), not system bootability in the broader sense. Kernel bugs, runtime failures, and other post-boot problems are outside what the tool can prove, and the language now matches.
+- The kernel-install hook is owned by `migrate` as a migration artifact instead of being installed by the RPM. The hook now persists across atomic-rollback uninstall, so removing the tool on a migrated system does not leave future kernel installs with unbootable BLS entries. Closes #17.
+
+### Removed
+
+- The libdnf5 actions plugin (`/etc/dnf/libdnf5-plugins/actions.d/atomic-rollback.actions`) is no longer shipped. The RPM C plugin added in 0.3.7 covers every RPM-based frontend (dnf, rpm, PackageKit); keeping both caused duplicate snapshots on dnf5 transactions. Closes #16.
+
+### Fixed
+
+- Systems upgrading from any 0.3.x release have their legacy `root.pre-update` snapshot renamed to its creation timestamp (in the same `%Y-%m-%d_%H-%M-%S` format as new automatic snapshots) on upgrade. The renamed snapshot joins the rolling history and becomes eligible for retention; before this release it did not match the auto-name format and was treated as a user-named snapshot, persisting indefinitely on upgraded systems. The btrfs subvolume ID is preserved across the rename, so rollback targets that referenced the numeric ID are unaffected.
+
 ## [0.3.8] - 2026-04-07
 
 ### Fixed
