@@ -66,6 +66,10 @@ fn is_help(arg: Option<&String>) -> bool {
     arg.is_some_and(|a| a == "--help" || a == "-h")
 }
 
+fn is_version(arg: Option<&String>) -> bool {
+    arg.is_some_and(|a| a == "--version" || a == "-V")
+}
+
 fn parse_snapshot(args: &[String]) -> SnapshotCommand {
     if is_help(args.get(2)) {
         print_snapshot_help();
@@ -98,6 +102,10 @@ fn parse_snapshot(args: &[String]) -> SnapshotCommand {
 }
 
 fn parse_args(args: &[String]) -> Command {
+    if is_version(args.get(1)) {
+        println!("atomic-rollback v{}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
     if args.len() < 2 || is_help(args.get(1)) {
         print_help();
         std::process::exit(if args.len() < 2 { 2 } else { 0 });
