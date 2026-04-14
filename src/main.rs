@@ -27,6 +27,7 @@ enum Command {
     Rollback { name: Option<String> },
     KernelHook { command: String, kver: String },
     EnsureHooks,
+    RenameLegacySnapshot,
 }
 
 enum SnapshotCommand {
@@ -117,6 +118,7 @@ fn parse_args(args: &[String]) -> Command {
             }
         }
         "ensure-hooks" => Command::EnsureHooks,
+        "rename-legacy-snapshot" => Command::RenameLegacySnapshot,
         "kernel-hook" => {
             // kernel-install calls hooks for events we may not handle.
             // Missing args = nothing to do.
@@ -241,6 +243,9 @@ fn main() {
         }
         Command::EnsureHooks => {
             kernel_hook::ensure_hooks();
+        }
+        Command::RenameLegacySnapshot => {
+            snapshot::rename_legacy_snapshot();
         }
         Command::KernelHook { command, kver } => {
             if let Err(e) = kernel_hook::handle(&command, &kver) {

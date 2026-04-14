@@ -2,7 +2,8 @@
 //! calls create before every transaction. Retention evicts the oldest
 //! automatic snapshots when the count exceeds MAX_SNAPSHOTS. List and
 //! delete delegate to btrfs-progs; delete adds an fstab guard that
-//! btrfs-progs lacks.
+//! btrfs-progs lacks. rename_legacy_snapshot is a one-shot migration
+//! for systems upgraded from the fixed-name era.
 
 use std::fs;
 use std::path::Path;
@@ -236,6 +237,54 @@ pub fn delete(name: &str) -> Result<u64, String> {
         .map(|_| id)
 }
 
+/// Transforms btrfs-show creation time "YYYY-MM-DD HH:MM:SS" to the
+/// auto-name format "YYYY-MM-DD_HH-MM-SS".
+fn format_legacy_timestamp(btrfs_show: &str) -> String {
+    match btrfs_show.split_once(' ') {
+        Some((date, time)) => format!("{date}_{}", time.replace(':', "-")),
+        None => btrfs_show.to_string(),
+    }
+}
+
+/// One-shot migration for systems upgraded from the fixed-name era:
+/// renames `root.pre-update` to its creation timestamp so it joins the
+/// rolling history and participates in retention. Idempotent no-op if
+/// the legacy subvolume is absent. Errors are printed but do not
+/// propagate (called from %posttrans).
+pub fn rename_legacy_snapshot() {
+    let root_fstype = match tools::run_stdout("findmnt", &["-n", "-o", "FSTYPE", "/"]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if root_fstype != "btrfs" {
+        return;
+    }
+
+    let result = tools::with_toplevel(|toplevel| -> Result<Option<(String, u64)>, String> {
+        let legacy_path = format!("{toplevel}/root.pre-update");
+        if !Path::new(&legacy_path).exists() {
+            return Ok(None);
+        }
+        let creation = tools::btrfs_subvol_creation_time(&legacy_path)?;
+        let new_name = format_legacy_timestamp(&creation);
+        let new_path = format!("{toplevel}/{new_name}");
+        std::fs::rename(&legacy_path, &new_path)
+            .map_err(|e| format!("rename root.pre-update -> {new_name}: {e}"))?;
+        let id = tools::btrfs_subvol_id_by_name("/", &tools::SubvolName::new(new_name.clone()))?;
+        Ok(Some((new_name, id)))
+    });
+
+    match result {
+        Ok(Some((name, id))) => {
+            println!("atomic-rollback: migrated legacy snapshot 'root.pre-update' to '{name}' (ID {id})");
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("atomic-rollback: rename-legacy-snapshot: {e}");
+        }
+    }
+}
+
 // System subvolumes from fstab. These must never be deleted.
 fn fstab_subvol_names() -> Result<Vec<tools::SubvolName>, String> {
     let content = fs::read_to_string("/etc/fstab")
@@ -316,6 +365,17 @@ UUID=abc /home btrfs subvol=home 0 0";
         assert_eq!(super::parse_max_snapshots("MAX_SNAPSHOTS=abc"), crate::consts::MAX_SNAPSHOTS);
         assert_eq!(super::parse_max_snapshots("OTHER_KEY=50"), crate::consts::MAX_SNAPSHOTS);
         assert_eq!(super::parse_max_snapshots("MAX_SNAPSHOTS=0"), 0);
+    }
+
+    #[test]
+    fn legacy_timestamp_format() {
+        assert_eq!(
+            super::format_legacy_timestamp("2026-04-11 23:19:26"),
+            "2026-04-11_23-19-26");
+        assert_eq!(
+            super::format_legacy_timestamp("1999-01-01 00:00:00"),
+            "1999-01-01_00-00-00");
+        assert!(super::is_auto_name(&super::format_legacy_timestamp("2026-04-11 23:19:26")));
     }
 
     #[test]
