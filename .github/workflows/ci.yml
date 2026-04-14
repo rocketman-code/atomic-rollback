@@ -1,8 +1,8 @@
 name: CI
 
 on:
-  pull_request:
-    branches: [main]
+  push:
+    branches: ['**']
 
 jobs:
   x86_64:
@@ -21,7 +21,7 @@ jobs:
       - name: Build and check
         run: |
           lima sudo dnf install -y rust cargo gcc git
-          lima git clone --depth 1 --branch $GITHUB_HEAD_REF https://github.com/$GITHUB_REPOSITORY.git /tmp/ar
+          lima git clone --depth 1 --branch $GITHUB_REF_NAME https://github.com/$GITHUB_REPOSITORY.git /tmp/ar
           lima bash -c "cd /tmp/ar && cargo build --release"
           lima sudo /tmp/ar/target/release/atomic-rollback check
 
