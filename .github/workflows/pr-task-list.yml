@@ -1,0 +1,24 @@
+name: PR Task List
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+jobs:
+  task-list-completed:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Check PR body for unchecked task-list items
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s\n' "$BODY" | grep -qE '^[[:space:]]*- \[ \]'; then
+            echo "::error::Test plan has unchecked items. All items must be completed before merge. Tests must be run and results verified."
+            echo ""
+            echo "Unchecked items found in PR body:"
+            printf '%s\n' "$BODY" | grep -nE '^[[:space:]]*- \[ \]'
+            exit 1
+          fi
+          echo "All task-list items are checked."
