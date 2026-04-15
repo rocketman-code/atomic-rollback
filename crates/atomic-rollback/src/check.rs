@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::grub::GrubContext;
+use crate::grub::{GrubContext, GrubContextError};
 use crate::parse;
 use crate::platform::FEDORA as P;
 use crate::tools;
@@ -18,6 +18,11 @@ pub enum BootStatus {
     Pass,
     Warn,
     Fail(Vec<String>),
+    /// The check could not verify boot chain state (e.g., non-root
+    /// invocation hits permission-denied on the ESP grub.cfg).
+    /// Distinct from `Fail` because the boot chain may be fine; we
+    /// simply did not have the access needed to evaluate it.
+    Inaccessible { reason: String, hint: String },
 }
 
 fn evaluate_checks(checks: Vec<(&str, Vec<CheckResult>)>) -> BootStatus {
@@ -51,8 +56,12 @@ fn evaluate_checks(checks: Vec<(&str, Vec<CheckResult>)>) -> BootStatus {
 pub fn verify_bootable(root: &Path) -> BootStatus {
     let grub = match GrubContext::from_system(root) {
         Ok(g) => g,
-        Err(e) => return BootStatus::Fail(vec![format!(
-            "Cannot determine how GRUB boots this system: {e}. \
+        Err(GrubContextError::PermissionDenied { path }) => return BootStatus::Inaccessible {
+            reason: format!("permission denied reading {}", path.display()),
+            hint: "The ESP grub.cfg is root-readable only on Fedora. Run: sudo atomic-rollback check".into(),
+        },
+        Err(GrubContextError::Other(msg)) => return BootStatus::Fail(vec![format!(
+            "Cannot determine how GRUB boots this system: {msg}. \
              Ensure {}/grub.cfg exists and the root filesystem is mounted.", P.esp_dir
         )]),
     };
@@ -71,8 +80,12 @@ pub fn verify_bootable(root: &Path) -> BootStatus {
 pub fn verify_snapshot_bootable(root: &Path) -> BootStatus {
     let grub = match GrubContext::for_snapshot(root) {
         Ok(g) => g,
-        Err(e) => return BootStatus::Fail(vec![format!(
-            "Cannot determine boot configuration: {e}. \
+        Err(GrubContextError::PermissionDenied { path }) => return BootStatus::Inaccessible {
+            reason: format!("permission denied reading {}", path.display()),
+            hint: "The ESP grub.cfg is root-readable only on Fedora. Run as root.".into(),
+        },
+        Err(GrubContextError::Other(msg)) => return BootStatus::Fail(vec![format!(
+            "Cannot determine boot configuration: {msg}. \
              Ensure {}/grub.cfg exists.", P.esp_dir
         )]),
     };
@@ -114,6 +127,17 @@ pub fn gate(step: &str, root: &Path, swap_artifact: Option<&str>) {
             for f in &failures {
                 eprintln!("    {f}");
             }
+            std::process::exit(1);
+        }
+        BootStatus::Inaccessible { reason, hint } => {
+            // Migration runs as root; reaching this branch means something
+            // unexpected prevented verification. Fail safe (don't proceed).
+            println!("\n  GATE {step}: FAIL");
+            if let Some(old) = swap_artifact {
+                eprintln!("    The swap completed. Old file preserved at {old}.");
+            }
+            eprintln!("    Cannot verify boot chain: {reason}");
+            eprintln!("    {hint}");
             std::process::exit(1);
         }
     }

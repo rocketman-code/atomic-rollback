@@ -4,6 +4,10 @@ All notable changes to atomic-rollback are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `check` now distinguishes "cannot verify" from "boot chain has problems." Running as non-root on Fedora (where the ESP grub.cfg is root-readable only) previously reported a boot-chain failure with exit 1, misleading users about the actual system state. The tool now reports "cannot verify boot chain" with a prompt to run as root, and exits with code 3 to let scripts distinguish the case. Closes #14.
+
 ## [0.4.0] - 2026-04-14
 
 ### Added

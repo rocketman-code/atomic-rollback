@@ -39,6 +39,16 @@ pub fn rollback(snapshot_name: &str) -> Result<(), String> {
             let _ = std::fs::remove_dir(toplevel);
             return Err("rollback aborted: boot chain invalid for snapshot".into());
         }
+        check::BootStatus::Inaccessible { reason, hint } => {
+            // Cannot verify snapshot bootability; fail safe rather than
+            // proceed with an unchecked RENAME_EXCHANGE.
+            println!("\n  Snapshot verification FAILED:");
+            eprintln!("    cannot verify boot chain: {reason}");
+            eprintln!("    {hint}");
+            tools::umount(toplevel)?;
+            let _ = std::fs::remove_dir(toplevel);
+            return Err("rollback aborted: boot chain could not be verified for snapshot".into());
+        }
     }
 
     check::print_rollback_scope(&fstab);
