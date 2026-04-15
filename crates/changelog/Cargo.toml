@@ -1,0 +1,16 @@
+[package]
+name = "changelog"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Generator binary and drift check for atomic-rollback's CHANGELOG.md"
+
+[[bin]]
+name = "changelog"
+path = "src/bin/changelog.rs"
+
+[dependencies]
+changelog-core = { path = "../changelog-core" }
+
+[build-dependencies]
+changelog-core = { path = "../changelog-core" }

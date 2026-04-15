@@ -2,4 +2,6 @@
 resolver = "3"
 members = [
     "crates/atomic-rollback",
+    "crates/changelog-core",
+    "crates/changelog",
 ]
