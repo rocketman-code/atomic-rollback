@@ -1,0 +1,72 @@
+name: PR Fragment
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+jobs:
+  fragment-required:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v3
+        id: paths
+        with:
+          filters: |
+            user_facing:
+              - 'crates/atomic-rollback/src/**'
+            fragment:
+              - 'crates/changelog-core/src/lib.rs'
+
+      - name: Enforce fragment requirement
+        if: ${{ steps.paths.outputs.user_facing == 'true' && steps.paths.outputs.fragment == 'false' }}
+        run: |
+          cat <<'MSG'
+          ::error::This PR modifies crates/atomic-rollback/src/** but does not modify crates/changelog-core/src/lib.rs. Every change to user-facing source requires a Fragment.
+
+          To fix:
+
+          1. Add a variant to the fragments! macro invocation in crates/changelog-core/src/lib.rs
+          2. Add a match arm in Fragment::status() returning one of:
+
+             - Status::Unreleased { section: ..., text: "..." } for changes that will appear in CHANGELOG.md
+             - Status::InternalOnly { description: "..." } for changes with no user-perceivable effect (pure private refactor, no perf change, no behavior change). Use sparingly and only after checking there is truly no user impact.
+
+          Example (user-facing change):
+
+            fragments! { /* existing variants, */ DescribeYourChangeHere }
+
+            impl Fragment {
+                pub const fn status(self) -> Status {
+                    match self {
+                        /* existing arms, */
+                        Self::DescribeYourChangeHere => Status::Unreleased {
+                            section: Section::Added,
+                            text: "What users experience, in one sentence.",
+                        },
+                    }
+                }
+            }
+
+          Example (internal-only change):
+
+            Self::RenamedPrivateHelperFoo => Status::InternalOnly {
+                description: "Renamed private helper Foo to Bar for consistency.",
+            },
+
+          After editing crates/changelog-core/src/lib.rs, regenerate CHANGELOG.md:
+
+              cargo run -p changelog > CHANGELOG.md
+
+          Then commit both files together. If you do not, build.rs panics on the next cargo build.
+
+          If you are stuck, comment on this PR and a maintainer will add the Fragment for you.
+
+          See docs/standards/changelog-fragments.md for the full contract, including when InternalOnly is appropriate.
+          MSG
+          exit 1
