@@ -98,6 +98,12 @@ fn handle_add(kver: &str) -> Result<(), String> {
             // Don't return Err; that would abort kernel-install and leave worse state.
             Ok(())
         }
+        check::BootStatus::Inaccessible { reason, hint } => {
+            // Kernel-install runs as root; reaching this branch is unusual.
+            // Log and continue; do not abort kernel-install.
+            eprintln!("atomic-rollback: WARNING after kernel {kver} install: cannot verify boot chain ({reason}). {hint}");
+            Ok(())
+        }
     }
 }
 

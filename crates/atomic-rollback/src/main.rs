@@ -173,6 +173,11 @@ fn main() {
                     println!("\nBoot chain has problems.");
                     std::process::exit(1);
                 }
+                check::BootStatus::Inaccessible { reason, hint } => {
+                    eprintln!("Cannot verify boot chain: {reason}");
+                    eprintln!("{hint}");
+                    std::process::exit(3);
+                }
             }
         }
         Command::Setup => {

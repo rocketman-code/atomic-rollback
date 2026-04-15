@@ -207,6 +207,9 @@ fragments! {
 
     // v0.4.0 (7 Added, 2 Changed, 1 Removed, 1 Fixed)
     AutomaticSnapshotsRollingTimestampNames,
+
+    // Unreleased
+    CheckDistinguishesPermissionDeniedFromBootFailure,
     SnapshotRetention,
     SnapshotListThreeColumnTable,
     RollbackAndDeleteAcceptBtrfsIds,
@@ -478,6 +481,12 @@ impl Fragment {
             Self::LegacyRootPreUpdateRenamed => Status::Released {
                 version: VersionId::V0_4_0, section: Section::Fixed,
                 text: "Systems upgrading from any 0.3.x release have their legacy `root.pre-update` snapshot renamed to its creation timestamp (in the same `%Y-%m-%d_%H-%M-%S` format as new automatic snapshots) on upgrade. The renamed snapshot joins the rolling history and becomes eligible for retention; before this release it did not match the auto-name format and was treated as a user-named snapshot, persisting indefinitely on upgraded systems. The btrfs subvolume ID is preserved across the rename, so rollback targets that referenced the numeric ID are unaffected.",
+            },
+
+            // Unreleased
+            Self::CheckDistinguishesPermissionDeniedFromBootFailure => Status::Unreleased {
+                section: Section::Fixed,
+                text: "`check` now distinguishes \"cannot verify\" from \"boot chain has problems.\" Running as non-root on Fedora (where the ESP grub.cfg is root-readable only) previously reported a boot-chain failure with exit 1, misleading users about the actual system state. The tool now reports \"cannot verify boot chain\" with a prompt to run as root, and exits with code 3 to let scripts distinguish the case. Closes #14.",
             },
         }
     }

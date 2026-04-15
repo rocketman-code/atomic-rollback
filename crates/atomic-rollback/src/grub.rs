@@ -4,10 +4,23 @@
 //! btrfs_relative_path is set.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::platform::FEDORA as P;
 use crate::tools;
+
+/// Errors from building a GrubContext. Distinguishes permission-denied
+/// on the ESP grub.cfg read (non-root invocation) from other errors,
+/// so the caller can surface "try sudo" vs a real boot-chain problem.
+pub enum GrubContextError {
+    PermissionDenied { path: PathBuf },
+    Other(String),
+}
+
+impl From<String> for GrubContextError {
+    fn from(s: String) -> Self { GrubContextError::Other(s) }
+}
 
 /// Captures how GRUB resolves paths on the target filesystem.
 /// Used by check.rs to verify that GRUB can find kernels and configs.
@@ -20,14 +33,20 @@ pub struct GrubContext {
     _mount: Option<tools::MountPoint>,
 }
 
+fn read_esp_cfg(path: &Path) -> Result<String, GrubContextError> {
+    fs::read_to_string(path).map_err(|e| match e.kind() {
+        io::ErrorKind::PermissionDenied => GrubContextError::PermissionDenied { path: path.to_path_buf() },
+        _ => GrubContextError::Other(format!("cannot read ESP grub.cfg: {e}")),
+    })
+}
+
 impl GrubContext {
     /// Builds a context from the live system's ESP grub.cfg.
     /// Reads the target UUID, determines filesystem type, and mounts
     /// the target if not already mounted.
-    pub fn from_system(root: &Path) -> Result<Self, String> {
+    pub fn from_system(root: &Path) -> Result<Self, GrubContextError> {
         let esp_cfg = root.join(&P.esp_dir[1..]).join("grub.cfg");
-        let content = fs::read_to_string(&esp_cfg)
-            .map_err(|e| format!("cannot read ESP grub.cfg: {e}"))?;
+        let content = read_esp_cfg(&esp_cfg)?;
         let stub = tools::parse_esp_stub(&content)?;
 
         let target_fstype = tools::blkid_fstype(&stub.boot_uuid)
@@ -42,10 +61,9 @@ impl GrubContext {
     /// Builds a context for verifying a snapshot before rollback.
     /// Reads ESP config from the live system (ESP is vfat, not in the snapshot).
     /// Resolves GRUB paths against the snapshot mount, not the live root.
-    pub fn for_snapshot(snapshot_root: &Path) -> Result<Self, String> {
+    pub fn for_snapshot(snapshot_root: &Path) -> Result<Self, GrubContextError> {
         let esp_cfg = Path::new(P.esp_dir).join("grub.cfg");
-        let content = fs::read_to_string(esp_cfg)
-            .map_err(|e| format!("cannot read ESP grub.cfg: {e}"))?;
+        let content = read_esp_cfg(&esp_cfg)?;
         let stub = tools::parse_esp_stub(&content)?;
 
         let target_fstype = tools::blkid_fstype(&stub.boot_uuid)
