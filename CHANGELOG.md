@@ -2,6 +2,8 @@
 
 All notable changes to atomic-rollback are documented here.
 
+## [Unreleased]
+
 ## [0.4.0] - 2026-04-14
 
 ### Added
@@ -74,6 +76,10 @@ All notable changes to atomic-rollback are documented here.
 
 ## [0.3.2] - 2026-04-01
 
+### Changed
+
+- Internal architecture: all external tool output parsed through grammar-derived types at the boundary. Filesystem type comparisons use an enum instead of string matching.
+
 ### Fixed
 
 - Subvolume names with spaces now parse correctly. The btrfs output parser used whitespace splitting which truncated paths containing spaces.
@@ -82,21 +88,17 @@ All notable changes to atomic-rollback are documented here.
 - BLS root= parameter check accepts all kernel device formats (PARTUUID=, PARTLABEL=, /dev/). Previously only root=UUID= and root=/dev/ were accepted.
 - ESP grub.cfg migration renders from the generator template instead of line surgery, eliminating the double-prefix bug class by construction.
 
+## [0.3.1] - 2026-03-31
+
 ### Changed
 
-- Internal architecture: all external tool output parsed through grammar-derived types at the boundary. Filesystem type comparisons use an enum instead of string matching.
-
-## [0.3.1] - 2026-03-31
+- Installation via COPR is the only supported method. The crate was removed from crates.io (binary alone is insufficient without the hook and plugin).
 
 ### Fixed
 
 - Kernel-install hook uses full binary path (/usr/bin/atomic-rollback). The bare command was not in RPM's scriptlet PATH, causing exit 127 on kernel upgrades.
 - RPM spec rewritten for COPR vendored builds. The previous spec used %cargo_build which expects Fedora-packaged crates.
 - COPR Makefile builds from cloned source with correct outdir contract.
-
-### Changed
-
-- Installation via COPR is the only supported method. The crate was removed from crates.io (binary alone is insufficient without the hook and plugin).
 
 ## [0.3.0] - 2026-03-30
 
@@ -141,8 +143,6 @@ All notable changes to atomic-rollback are documented here.
 
 ## [0.1.1] - 2026-03-29
 
-Initial release.
-
 ### Added
 
 - `check`, `migrate`, `rollback`, `snapshot` commands.
@@ -159,3 +159,4 @@ Initial release.
 - All system-specific values (device ref, compression, subvol name) derived from fstab.
 - Bootability predicate derived from the actual Fedora boot chain.
 - RPM spec with kernel-install hook and dnf plugin.
+
